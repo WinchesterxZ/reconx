@@ -113,6 +113,9 @@ export async function POST(request: NextRequest) {
     if (config.skipJs) args.push("--skip-js");
     if (config.skipVuln) args.push("--skip-vuln");
 
+    if (config.orgName) args.push("--org", config.orgName);
+    if (config.resumeDir) args.push("--resume", config.resumeDir);
+
     // Spawn the process
     const logFile = path.join(outputDir, "reconx.log");
     const logStream = (await fs.open(logFile, "w")).createWriteStream();

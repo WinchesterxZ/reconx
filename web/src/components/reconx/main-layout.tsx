@@ -11,6 +11,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Menu,
+  BookOpen,
 } from "lucide-react";
 import type { ViewMode } from "@/lib/reconx-types";
 
@@ -24,6 +25,7 @@ interface MainLayoutProps {
 const navItems = [
   { id: "new-scan" as ViewMode, label: "New Scan", icon: Plus },
   { id: "history" as ViewMode, label: "Scan History", icon: History },
+  { id: "guide" as ViewMode, label: "Guide", icon: BookOpen },
 ];
 
 export default function MainLayout({
@@ -150,6 +152,7 @@ export default function MainLayout({
               {activeView === "history" && "View and manage past scan results"}
               {activeView === "progress" && "Monitor active scan progress in real-time"}
               {activeView === "results" && "Review scan findings and exported data"}
+              {activeView === "guide" && "Learn how to set up and use ReconX"}
             </p>
           </div>
           {runningScanId && activeView !== "progress" && (

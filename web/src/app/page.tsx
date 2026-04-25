@@ -6,6 +6,7 @@ import NewScanForm from '@/components/reconx/new-scan-form';
 import ScanProgress from '@/components/reconx/scan-progress';
 import ResultsDashboard from '@/components/reconx/results-dashboard';
 import ScanHistory from '@/components/reconx/scan-history';
+import GuidePage from '@/components/reconx/guide-page';
 import type { ViewMode, ScanConfig, ScanMetadata } from '@/lib/reconx-types';
 import { useToast } from '@/hooks/use-toast';
 
@@ -123,6 +124,10 @@ export default function Home() {
           scanId={selectedScanId}
           onBack={handleBackFromResults}
         />
+      )}
+
+      {activeView === 'guide' && (
+        <GuidePage />
       )}
     </MainLayout>
   );

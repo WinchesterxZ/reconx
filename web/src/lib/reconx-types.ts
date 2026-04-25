@@ -4,6 +4,7 @@ export interface ScanConfig {
   domains: string[];
   ips: string[];
   asns: string[];
+  orgName?: string;
   scopeFile?: string;
   outputDir: string;
   verbose: boolean;
@@ -11,12 +12,19 @@ export interface ScanConfig {
   customHeader?: string;
   githubToken?: string;
   chaosKey?: string;
+  shodanKey?: string;
+  virustotalKey?: string;
   skipSubs: boolean;
   skipAlive: boolean;
   skipPorts: boolean;
   skipUrls: boolean;
   skipJs: boolean;
   skipVuln: boolean;
+  resumeDir?: string;
+  workers?: number;
+  htmlReport: boolean;
+  jsonReport: boolean;
+  saveRaw: boolean;
 }
 
 export interface ScanMetadata {
@@ -70,4 +78,20 @@ export interface PhaseStatus {
   status: "pending" | "running" | "done" | "failed" | "skipped";
 }
 
-export type ViewMode = "new-scan" | "history" | "progress" | "results";
+export type ViewMode = "new-scan" | "history" | "progress" | "results" | "guide";
+
+export interface SavedSettings {
+  githubToken: string;
+  chaosKey: string;
+  shodanKey: string;
+  virustotalKey: string;
+  orgName: string;
+  customHeader: string;
+  outputDir: string;
+  verbose: boolean;
+  noTimeout: boolean;
+  htmlReport: boolean;
+  jsonReport: boolean;
+  saveRaw: boolean;
+  workers: number;
+}

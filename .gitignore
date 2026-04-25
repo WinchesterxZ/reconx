@@ -1,0 +1,25 @@
+# Build output
+dist/
+web/.next/
+web/node_modules/
+
+# Go
+reconx
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Scan output
+output/
+scans/
+
+# Env
+.env
+.env.local
