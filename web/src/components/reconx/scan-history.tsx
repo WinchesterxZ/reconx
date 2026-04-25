@@ -59,10 +59,6 @@ export default function ScanHistory({
     fetchScans();
   }, []);
 
-  useEffect(() => {
-    fetchScans();
-  }, [historyRefreshKey]);
-
   const handleDelete = async (scanId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setDeleting(scanId);

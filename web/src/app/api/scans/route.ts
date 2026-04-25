@@ -4,10 +4,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { v4 as uuidv4 } from "uuid";
 import type { ScanConfig, ScanMetadata } from "@/lib/reconx-types";
-
-const BINARY_PATH = "/home/z/my-project/reconx/dist/reconx-linux-amd64";
-const SCANS_DIR = "/home/z/my-project/reconx/scans";
-const RECONX_OUTPUT_BASE = "/home/z/my-project/reconx/output";
+import { BINARY_PATH, SCANS_DIR, OUTPUT_DIR } from "@/lib/paths";
 
 // GET /api/scans - List all scans
 export async function GET() {
@@ -76,7 +73,7 @@ export async function POST(request: NextRequest) {
 
     // Generate unique scan ID
     const scanId = uuidv4().slice(0, 8);
-    const outputDir = path.join(RECONX_OUTPUT_BASE, scanId);
+    const outputDir = path.join(OUTPUT_DIR, scanId);
     await fs.mkdir(outputDir, { recursive: true });
 
     // Build CLI arguments

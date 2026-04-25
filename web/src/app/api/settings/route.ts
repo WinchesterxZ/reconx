@@ -1,14 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
+import { SCANS_DIR } from "@/lib/paths";
 
-const SETTINGS_DIR = "/home/z/my-project/reconx/scans";
 const SETTINGS_FILE = "reconx-gui-settings.json";
 
 // GET /api/settings - Load saved settings
 export async function GET() {
   try {
-    const settingsPath = path.join(SETTINGS_DIR, SETTINGS_FILE);
+    const settingsPath = path.join(SCANS_DIR, SETTINGS_FILE);
     try {
       const content = await fs.readFile(settingsPath, "utf-8");
       const settings = JSON.parse(content);
@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
     const settings = await request.json();
 
     await fs.mkdir(SETTINGS_DIR, { recursive: true });
-    const settingsPath = path.join(SETTINGS_DIR, SETTINGS_FILE);
+    const settingsPath = path.join(SCANS_DIR, SETTINGS_FILE);
     await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2));
 
     return NextResponse.json({ success: true, message: "Settings saved" });

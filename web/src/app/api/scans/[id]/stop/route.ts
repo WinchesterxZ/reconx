@@ -2,8 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { promises as fs } from "fs";
 import path from "path";
 import type { ScanMetadata } from "@/lib/reconx-types";
-
-const SCANS_DIR = "/home/z/my-project/reconx/scans";
+import { SCANS_DIR } from "@/lib/paths";
 
 // POST /api/scans/[id]/stop - Stop a running scan
 export async function POST(
