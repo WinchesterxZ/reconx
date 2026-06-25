@@ -88,6 +88,17 @@ func (m *Module) Run(ctx context.Context) error {
                 m.runTrufflehogGitHub(ctx)
         }
 
+        // Save secrets.txt so resume mode can pick up where we left off
+        if secrets := m.store.Secrets; len(secrets) > 0 {
+                lines := make([]string, 0, len(secrets))
+                for _, s := range secrets {
+                        lines = append(lines, fmt.Sprintf("[%s] %s — source=%s", s.Type, s.Value, s.Source))
+                }
+                if err := store.SaveRaw(m.outDir+"/secrets.txt", lines); err != nil {
+                        m.log.Warn("Could not save secrets.txt: %v", err)
+                }
+        }
+
         stats := m.store.Stats()
         m.log.PhaseComplete("JS & Secret Analysis", stats["secrets"], time.Since(start))
         return nil

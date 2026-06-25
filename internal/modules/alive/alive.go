@@ -279,7 +279,10 @@ func parseHTTPXLine(line string) *store.Host {
 
         host.Title  = firstOf(line, "title", "Title", "page-title")
         host.Server = firstOf(line, "webserver", "web-server", "server", "Server")
-        host.IP     = firstOf(line, "host", "ip", "a", "IP")
+        // httpx JSON: "host" is the input hostname (same as Domain), "a" is the
+        // first A-record IP, "ip" is the resolved IP. We want an IP here, not a
+        // repeat of the hostname.
+        host.IP     = firstOf(line, "a", "ip", "IP")
 
         // Content length
         cl := firstOf(line, "content-length", "content_length")

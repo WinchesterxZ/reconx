@@ -162,6 +162,15 @@ func (m *Module) Run(ctx context.Context) error {
 
         if totalFindings > 0 {
                 m.logFindingSummary()
+                // Save findings.txt for resume support + downstream tools
+                lines := make([]string, 0, len(m.store.Findings))
+                for _, f := range m.store.Findings {
+                        lines = append(lines, fmt.Sprintf("[%s] %s — %s (%s)",
+                                strings.ToUpper(f.Severity), f.Name, f.Target, f.Template))
+                }
+                if err := store.SaveRaw(m.outDir+"/findings.txt", lines); err != nil {
+                        m.log.Warn("Could not save findings.txt: %v", err)
+                }
         }
         return nil
 }

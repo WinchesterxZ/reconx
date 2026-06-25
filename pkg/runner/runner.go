@@ -5,7 +5,6 @@ import (
         "bytes"
         "context"
         "fmt"
-        "os"
         "os/exec"
         "strings"
         "sync"

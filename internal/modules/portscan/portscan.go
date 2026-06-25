@@ -56,7 +56,11 @@ func (m *Module) Run(ctx context.Context) error {
         }
         input := strings.Join(hostList, "\n")
 
-        args := append([]string{"-json", "-silent", "-p", "top-1000", "-rate", "2000"}, tcfg.Flags...)
+        // Base args — we do NOT pass -rate from config because the config
+        // already supplies it via tcfg.Flags. Old code had a duplicate -rate.
+        args := []string{"-json", "-silent", "-p", "top-1000"}
+        // Merge in user-configured flags (e.g. -rate 2000).
+        args = append(args, tcfg.Flags...)
         m.log.Tool("naabu", fmt.Sprintf("%d live hosts", len(hostList)))
         m.log.ToolCmd("naabu", args, fmt.Sprintf("[%d hosts via stdin]", len(hostList)))
 
@@ -102,8 +106,17 @@ func (m *Module) Run(ctx context.Context) error {
                 m.log.Warn("naabu: %d lines could not be parsed — check reconx.log", parseErrors)
         }
 
-        // Log interesting ports summary
+        // Save ports.txt for resume support and downstream tools (ffuf, etc.)
         if portCount > 0 {
+                portLines := make([]string, 0, len(m.store.Ports))
+                for _, p := range m.store.Ports {
+                        portLines = append(portLines, fmt.Sprintf("%s:%d", p.Host, p.Port))
+                }
+                if err := store.SaveRaw(m.outDir+"/ports.txt", portLines); err != nil {
+                        m.log.Warn("Failed to save ports.txt: %v", err)
+                } else {
+                        m.log.Debug("Saved ports.txt (%d entries)", len(portLines))
+                }
                 m.logPortSummary()
         }
 

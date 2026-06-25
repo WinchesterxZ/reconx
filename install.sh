@@ -211,6 +211,10 @@ install_go_tool "github.com/tomnomnom/assetfinder"    "assetfinder"
 install_go_tool "github.com/d3mondev/puredns/v2"      "puredns"
 install_go_tool "github.com/hakluke/hakrevdns"        "hakrevdns"
 
+# Additional subdomain tools (added for max domain coverage)
+install_go_tool "github.com/cgboal/sonarsearch/crobat" "crobat"
+install_go_tool "github.com/projectdiscovery/shuffledns/cmd/shuffledns" "shuffledns"
+
 # JS analysis
 install_go_tool "github.com/lc/subjs"                 "subjs"
 install_go_tool "github.com/003random/getJS"           "getJS"
@@ -430,6 +434,7 @@ step "Verification"
 
 ALL_TOOLS=(
     subfinder assetfinder amass findomain chaos puredns dnsx github-subdomains
+    crobat shuffledns
     httpx curl naabu
     waybackurls waymore gau gauplus katana hakrawler gospider paramspider
     mantra jsecret subjs trufflehog
