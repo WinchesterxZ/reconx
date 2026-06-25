@@ -89,6 +89,18 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
         board := m.log.NewProgressBoard()
         board.Register("httpx", fmt.Sprintf("%d subdomains", len(subs)))
 
+        // Live totals in the summary header
+        board.SetLiveStats(func() map[string]int {
+                stats := m.store.Stats()
+                return map[string]int{
+                        "subdomains": stats["subdomains"],
+                        "live_hosts": stats["live_hosts"],
+                        "urls":       stats["urls"],
+                        "findings":   stats["findings"],
+                        "secrets":    stats["secrets"],
+                }
+        })
+
         r := runner.Run(ctx, path, args,
                 runner.WithStdin(input),
                 runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
@@ -98,6 +110,9 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
                         mu.Lock()
                         httpxErrors = append(httpxErrors, line)
                         mu.Unlock()
+                        // Heartbeat — keeps the board from showing httpx as "stuck"
+                        // while it's actively probing hosts that don't respond.
+                        board.Heartbeat("httpx")
                 }),
                 runner.WithLineCallback(func(line string) {
                         line = strings.TrimSpace(line)

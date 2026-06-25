@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ReconX Report — {{.ScanID}}</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+  :root {
+    --bg: #0a0c0f; --bg2: #0f1215; --bg3: #151a1f; --bg4: #1c2229;
+    --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.13);
+    --text: #e2e8f0; --muted: #64748b; --muted2: #94a3b8;
+    --accent: #00ff88; --accent2: #00d4aa;
+    --critical: #ff3d5a; --high: #ff6b35; --medium: #ffd93d; --low: #6bcb77; --info: #4d9fff;
+    --sidebar-w: 260px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; line-height: 1.6; overflow-x: hidden; }
+  a { color: var(--info); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ─── Layout ─────────────────────────────────────────────── */
+  .app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; }
+  .sidebar { background: var(--bg2); border-right: 1px solid var(--border2); position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 24px 0; }
+  .main { padding: 32px 40px; min-width: 0; }
+
+  /* ─── Header ─────────────────────────────────────────────── */
+  .topbar { background: linear-gradient(135deg, #0f1215 0%, #0a0c0f 100%); border-bottom: 1px solid var(--border2); padding: 28px 40px; }
+  .topbar-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
+  .logo { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; color: var(--accent); letter-spacing: -1px; }
+  .logo-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .scan-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); text-align: right; line-height: 1.7; }
+  .targets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .target-tag { background: rgba(0,255,136,0.08); border: 1px solid rgba(0,255,136,0.2); color: var(--accent); padding: 3px 10px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+
+  /* ─── Stats grid ─────────────────────────────────────────── */
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--border); border-bottom: 1px solid var(--border2); }
+  .stat-card { background: var(--bg2); padding: 18px 20px; transition: background 0.15s; cursor: pointer; }
+  .stat-card:hover { background: var(--bg3); }
+  .stat-card.active { background: var(--bg3); border-bottom: 2px solid var(--accent); }
+  .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
+  .stat-value { font-size: 26px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #fff; }
+  .stat-card.danger .stat-value { color: var(--critical); }
+  .stat-card.warn .stat-value { color: var(--medium); }
+  .stat-card.good .stat-value { color: var(--accent); }
+
+  /* ─── Sidebar ────────────────────────────────────────────── */
+  .nav-section { padding: 0 20px; margin-bottom: 24px; }
+  .nav-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); margin-bottom: 8px; padding: 0 8px; }
+  .nav-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; cursor: pointer; color: var(--muted2); font-size: 13px; font-weight: 500; transition: all 0.12s; margin-bottom: 2px; }
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { background: rgba(0,255,136,0.08); color: var(--accent); }
+  .nav-item .count { background: var(--bg3); padding: 1px 8px; border-radius: 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--muted); }
+  .nav-item.active .count { background: rgba(0,255,136,0.15); color: var(--accent); }
+  .nav-item .icon { width: 16px; margin-right: 8px; opacity: 0.7; }
+
+  /* ─── Filter chips ───────────────────────────────────────── */
+  .filter-group { margin-bottom: 16px; }
+  .filter-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 6px; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { background: var(--bg3); border: 1px solid var(--border); color: var(--muted2); padding: 3px 9px; border-radius: 12px; font-size: 11px; font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.12s; user-select: none; }
+  .chip:hover { border-color: var(--border2); color: var(--text); }
+  .chip.active { background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.4); color: var(--accent); }
+  .chip.crit { color: var(--critical); }
+  .chip.crit.active { background: rgba(255,61,90,0.15); border-color: rgba(255,61,90,0.4); }
+  .chip.high { color: var(--high); }
+  .chip.high.active { background: rgba(255,107,53,0.15); border-color: rgba(255,107,53,0.4); }
+  .chip.med { color: var(--medium); }
+  .chip.med.active { background: rgba(255,217,61,0.15); border-color: rgba(255,217,61,0.4); }
+  .chip.low { color: var(--low); }
+  .chip.low.active { background: rgba(107,203,119,0.15); border-color: rgba(107,203,119,0.4); }
+
+  /* ─── Search box ─────────────────────────────────────────── */
+  .search-wrap { position: relative; margin-bottom: 16px; }
+  .search-box { width: 100%; padding: 10px 14px 10px 36px; background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 13px; outline: none; transition: border 0.15s; }
+  .search-box:focus { border-color: var(--accent); }
+  .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; }
+
+  /* ─── Toolbar ────────────────────────────────────────────── */
+  .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+  .toolbar-left { display: flex; align-items: center; gap: 12px; }
+  .toolbar-right { display: flex; gap: 8px; }
+  .btn { background: var(--bg3); border: 1px solid var(--border2); color: var(--text); padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.12s; font-family: inherit; }
+  .btn:hover { background: var(--bg4); border-color: var(--accent); color: var(--accent); }
+
+  /* ─── Section / Table ────────────────────────────────────── */
+  .section { display: none; }
+  .section.active { display: block; }
+  .section-title { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  .section-sub { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
+
+  .table-wrap { background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px; overflow: hidden; }
+  .table-scroll { overflow-x: auto; max-height: 70vh; overflow-y: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead { position: sticky; top: 0; z-index: 10; }
+  th { text-align: left; padding: 11px 14px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); background: var(--bg3); border-bottom: 1px solid var(--border2); cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { color: var(--text); }
+  th.sorted { color: var(--accent); }
+  th .sort-arrow { font-size: 9px; margin-left: 4px; opacity: 0.7; }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  /* ─── Badges ─────────────────────────────────────────────── */
+  .sev { padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.5px; display: inline-block; }
+  .sev-critical { background: rgba(255,61,90,0.15); color: #ff3d5a; }
+  .sev-high     { background: rgba(255,107,53,0.15); color: #ff6b35; }
+  .sev-medium   { background: rgba(255,217,61,0.15); color: #ffd93d; }
+  .sev-low      { background: rgba(107,203,119,0.15); color: #6bcb77; }
+  .sev-info     { background: rgba(77,159,255,0.12); color: #4d9fff; }
+
+  .status-ok       { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+  .status-redirect { color: var(--info); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+  .status-auth     { color: var(--medium); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+  .status-err      { color: var(--critical); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
+
+  .tag { background: var(--bg3); border: 1px solid var(--border); padding: 1px 7px; border-radius: 3px; font-size: 10px; color: var(--muted2); margin-right: 3px; display: inline-block; margin-bottom: 3px; font-family: 'JetBrains Mono', monospace; }
+  .tag.warn { color: var(--medium); border-color: rgba(255,217,61,0.2); }
+
+  .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .truncate { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* ─── Charts ─────────────────────────────────────────────── */
+  .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .chart-card { background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px; padding: 20px; }
+  .chart-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 16px; }
+  .donut-wrap { display: flex; align-items: center; gap: 20px; }
+  .donut { width: 120px; height: 120px; flex-shrink: 0; }
+  .donut-legend { font-size: 12px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; color: var(--muted2); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .legend-val { font-family: 'JetBrains Mono', monospace; color: var(--text); margin-left: auto; }
+
+  .bar-chart { display: flex; flex-direction: column; gap: 6px; }
+  .bar-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+  .bar-label { width: 90px; text-align: right; color: var(--muted2); font-family: 'JetBrains Mono', monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-track { flex: 1; height: 18px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
+  .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 3px; transition: width 0.4s; }
+  .bar-val { width: 40px; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+
+  /* ─── Empty state ────────────────────────────────────────── */
+  .no-data { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .no-data-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
+  .no-data-text { font-size: 14px; }
+
+  /* ─── Result count ───────────────────────────────────────── */
+  .result-count { font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
+  .result-count b { color: var(--text); }
+
+  /* ─── Footer ─────────────────────────────────────────────── */
+  .footer { padding: 20px 40px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+
+  /* ─── Responsive ─────────────────────────────────────────── */
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--border2); }
+    .main { padding: 20px; }
+    .topbar { padding: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-top">
+    <div>
+      <div class="logo">⬡ ReconX</div>
+      <div class="logo-sub">Automated Bug Bounty Recon Framework</div>
+    </div>
+    <div class="scan-meta">
+      <div>Scan ID: {{.ScanID}}</div>
+      <div>Started: {{.StartTime.Format "2006-01-02 15:04:05"}}</div>
+      <div>Duration: {{.Duration}}</div>
+      <div>Generated: {{.GeneratedAt}}</div>
+    </div>
+  </div>
+  <div class="targets">
+    {{range .Targets}}<span class="target-tag">{{.}}</span>{{end}}
+  </div>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card" data-tab="subdomains"><div class="stat-label">Subdomains</div><div class="stat-value">{{.TotalSubdomains}}</div></div>
+  <div class="stat-card good" data-tab="hosts"><div class="stat-label">Live Hosts</div><div class="stat-value">{{.TotalLiveHosts}}</div></div>
+  <div class="stat-card" data-tab="ports"><div class="stat-label">Open Ports</div><div class="stat-value">{{.TotalPorts}}</div></div>
+  <div class="stat-card" data-tab="urls"><div class="stat-label">URLs Found</div><div class="stat-value">{{.TotalURLs}}</div></div>
+  <div class="stat-card" data-tab="js"><div class="stat-label">JS Files</div><div class="stat-value">{{.TotalJSFiles}}</div></div>
+  <div class="stat-card {{if gt .TotalFindings 0}}danger{{end}}" data-tab="findings"><div class="stat-label">Findings</div><div class="stat-value">{{.TotalFindings}}</div></div>
+  <div class="stat-card {{if gt .TotalSecrets 0}}danger{{end}}" data-tab="secrets"><div class="stat-label">Secrets</div><div class="stat-value">{{.TotalSecrets}}</div></div>
+</div>
+
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="nav-section">
+      <div class="nav-title">Sections</div>
+      <div class="nav-item active" data-tab="findings"><span><span class="icon">⚑</span>Findings</span><span class="count">{{.TotalFindings}}</span></div>
+      <div class="nav-item" data-tab="hosts"><span><span class="icon">●</span>Live Hosts</span><span class="count">{{.TotalLiveHosts}}</span></div>
+      <div class="nav-item" data-tab="subdomains"><span><span class="icon">◇</span>Subdomains</span><span class="count">{{.TotalSubdomains}}</span></div>
+      <div class="nav-item" data-tab="ports"><span><span class="icon">⬚</span>Ports</span><span class="count">{{.TotalPorts}}</span></div>
+      <div class="nav-item" data-tab="urls"><span><span class="icon">🔗</span>URLs</span><span class="count">{{.TotalURLs}}</span></div>
+      <div class="nav-item" data-tab="js"><span><span class="icon">{ }</span>JS Files</span><span class="count">{{.TotalJSFiles}}</span></div>
+      <div class="nav-item" data-tab="secrets"><span><span class="icon">🔑</span>Secrets</span><span class="count">{{.TotalSecrets}}</span></div>
+      <div class="nav-item" data-tab="dashboard"><span><span class="icon">📊</span>Dashboard</span><span class="count"></span></div>
+    </div>
+
+    <div class="nav-section" id="filter-panel">
+      <div class="nav-title">Filters</div>
+      <div id="filters-container"></div>
+    </div>
+
+    <div class="nav-section">
+      <div class="nav-title">Export</div>
+      <button class="btn" style="width:100%" onclick="exportCSV()">⬇ Export CSV (current view)</button>
+    </div>
+  </aside>
+
+  <!-- Main content -->
+  <main class="main">
+
+    <!-- DASHBOARD TAB -->
+    <div id="tab-dashboard" class="section">
+      <div class="section-title">Dashboard</div>
+      <div class="section-sub">Visual overview of all scan results</div>
+
+      <div class="charts-grid">
+        <!-- Severity donut -->
+        <div class="chart-card">
+          <div class="chart-title">Findings by Severity</div>
+          <div class="donut-wrap">
+            <svg class="donut" viewBox="0 0 36 36" id="severity-donut"></svg>
+            <div class="donut-legend">
+              {{range .SeverityChart}}
+              <div class="legend-item">
+                <div class="legend-dot" style="background:var(--{{if eq .Label "Critical"}}critical{{else if eq .Label "High"}}high{{else if eq .Label "Medium"}}medium{{else if eq .Label "Low"}}low{{end}})"></div>
+                <span>{{.Label}}</span>
+                <span class="legend-val">{{.Value}}</span>
+              </div>
+              {{end}}
+            </div>
+          </div>
+        </div>
+
+        <!-- Status codes bar chart -->
+        <div class="chart-card">
+          <div class="chart-title">HTTP Status Codes (top {{len .StatusChart}})</div>
+          <div class="bar-chart">
+            {{range .StatusChart}}
+            <div class="bar-row">
+              <div class="bar-label">{{.Label}}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalLiveHosts 0}}{{divInt .Value $.TotalLiveHosts 100}}{{else}}0{{end}}%"></div></div>
+              <div class="bar-val">{{.Value}}</div>
+            </div>
+            {{else}}
+            <div class="muted" style="text-align:center;padding:20px">No data</div>
+            {{end}}
+          </div>
+        </div>
+
+        <!-- Top ports bar chart -->
+        <div class="chart-card">
+          <div class="chart-title">Top Open Ports</div>
+          <div class="bar-chart">
+            {{range .PortChart}}
+            <div class="bar-row">
+              <div class="bar-label">{{.Label}}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalPorts 0}}{{divInt .Value $.TotalPorts 100}}{{else}}0{{end}}%"></div></div>
+              <div class="bar-val">{{.Value}}</div>
+            </div>
+            {{else}}
+            <div class="muted" style="text-align:center;padding:20px">No data</div>
+            {{end}}
+          </div>
+        </div>
+
+        <!-- Top tech bar chart -->
+        <div class="chart-card">
+          <div class="chart-title">Top Technologies</div>
+          <div class="bar-chart">
+            {{range .TechChart}}
+            <div class="bar-row">
+              <div class="bar-label" title="{{.Label}}">{{.Label}}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalLiveHosts 0}}{{divInt .Value $.TotalLiveHosts 100}}{{else}}0{{end}}%"></div></div>
+              <div class="bar-val">{{.Value}}</div>
+            </div>
+            {{else}}
+            <div class="muted" style="text-align:center;padding:20px">No data</div>
+            {{end}}
+          </div>
+        </div>
+
+        <!-- Subdomain sources bar chart -->
+        <div class="chart-card">
+          <div class="chart-title">Subdomain Sources (top {{len .SourceChart}})</div>
+          <div class="bar-chart">
+            {{range .SourceChart}}
+            <div class="bar-row">
+              <div class="bar-label" title="{{.Label}}">{{.Label}}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalSubdomains 0}}{{divInt .Value $.TotalSubdomains 100}}{{else}}0{{end}}%"></div></div>
+              <div class="bar-val">{{.Value}}</div>
+            </div>
+            {{else}}
+            <div class="muted" style="text-align:center;padding:20px">No data</div>
+            {{end}}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FINDINGS TAB -->
+    <div id="tab-findings" class="section active">
+      <div class="toolbar">
+        <div class="toolbar-left">
+          <div class="section-title">Vulnerability Findings</div>
+        </div>
+        <div class="toolbar-right">
+          <span class="result-count">Showing <b id="findings-count">{{.TotalFindings}}</b> of {{.TotalFindings}}</span>
+        </div>
+      </div>
+
+      <div class="charts-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 20px;">
+        <div class="chart-card"><div class="chart-title">Critical</div><div style="font-size:32px;font-weight:700;color:var(--critical);font-family:'JetBrains Mono',monospace">{{.CriticalCount}}</div></div>
+        <div class="chart-card"><div class="chart-title">High</div><div style="font-size:32px;font-weight:700;color:var(--high);font-family:'JetBrains Mono',monospace">{{.HighCount}}</div></div>
+        <div class="chart-card"><div class="chart-title">Medium</div><div style="font-size:32px;font-weight:700;color:var(--medium);font-family:'JetBrains Mono',monospace">{{.MediumCount}}</div></div>
+        <div class="chart-card"><div class="chart-title">Low</div><div style="font-size:32px;font-weight:700;color:var(--low);font-family:'JetBrains Mono',monospace">{{.LowCount}}</div></div>
+      </div>
+
+      {{if .Findings}}
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="findings-table">
+            <thead><tr>
+              <th data-sort="severity">Severity <span class="sort-arrow"></span></th>
+              <th data-sort="name">Finding <span class="sort-arrow"></span></th>
+              <th data-sort="target">Target <span class="sort-arrow"></span></th>
+              <th data-sort="template">Template <span class="sort-arrow"></span></th>
+              <th data-sort="time">Time <span class="sort-arrow"></span></th>
+            </tr></thead>
+            <tbody>
+              {{range .Findings}}
+              <tr data-severity="{{lower .Severity}}">
+                <td><span class="sev {{severityClass .Severity}}">{{upper .Severity}}</span></td>
+                <td>{{.Name}}</td>
+                <td class="mono truncate" title="{{.Target}}">{{.Target}}</td>
+                <td class="mono muted">{{.Template}}</td>
+                <td class="muted" style="white-space:nowrap">{{.FoundAt.Format "15:04:05"}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{else}}<div class="no-data"><div class="no-data-icon">✓</div><div class="no-data-text">No findings — either clean or tools not available</div></div>{{end}}
+    </div>
+
+    <!-- HOSTS TAB -->
+    <div id="tab-hosts" class="section">
+      <div class="toolbar">
+        <div class="toolbar-left"><div class="section-title">Live Hosts</div></div>
+        <div class="toolbar-right"><span class="result-count">Showing <b id="hosts-count">{{.TotalLiveHosts}}</b> of {{.TotalLiveHosts}}</span></div>
+      </div>
+      {{if .Hosts}}
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="hosts-table">
+            <thead><tr>
+              <th data-sort="domain">Domain <span class="sort-arrow"></span></th>
+              <th data-sort="status">Status <span class="sort-arrow"></span></th>
+              <th data-sort="title">Title <span class="sort-arrow"></span></th>
+              <th data-sort="server">Server <span class="sort-arrow"></span></th>
+              <th data-sort="tech">Tech <span class="sort-arrow"></span></th>
+              <th data-sort="ip">IP <span class="sort-arrow"></span></th>
+              <th data-sort="tags">Tags <span class="sort-arrow"></span></th>
+            </tr></thead>
+            <tbody>
+              {{range .Hosts}}
+              <tr data-status="{{.StatusCode}}" data-tech="{{range .TechStack}}{{.}},{{end}}" data-tags="{{range .Tags}}{{.}},{{end}}">
+                <td class="mono"><a href="{{index .Meta "url"}}" target="_blank">{{.Domain}}</a></td>
+                <td><span class="{{statusClass .StatusCode}}">{{if .StatusCode}}{{.StatusCode}}{{else}}—{{end}}</span></td>
+                <td class="truncate" title="{{.Title}}">{{.Title}}</td>
+                <td class="muted mono">{{.Server}}</td>
+                <td>{{range .TechStack}}<span class="tag">{{.}}</span>{{end}}</td>
+                <td class="muted mono">{{.IP}}</td>
+                <td>{{range .Tags}}<span class="tag warn">{{.}}</span>{{end}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{else}}<div class="no-data"><div class="no-data-icon">●</div><div class="no-data-text">No live hosts found</div></div>{{end}}
+    </div>
+
+    <!-- SUBDOMAINS TAB -->
+    <div id="tab-subdomains" class="section">
+      <div class="toolbar">
+        <div class="toolbar-left"><div class="section-title">All Subdomains</div></div>
+        <div class="toolbar-right"><span class="result-count">Showing <b id="subdomains-count">{{.TotalSubdomains}}</b> of {{.TotalSubdomains}}</span></div>
+      </div>
+      {{if .Subdomains}}
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="subdomains-table">
+            <thead><tr>
+              <th data-sort="subdomain" style="width:60%">Subdomain <span class="sort-arrow"></span></th>
+              <th data-sort="source">Source <span class="sort-arrow"></span></th>
+              <th data-sort="live">Live? <span class="sort-arrow"></span></th>
+            </tr></thead>
+            <tbody>
+              {{range $i, $s := .Subdomains}}
+              <tr data-source="{{if $s.Source}}{{$s.Source}}{{else}}unknown{{end}}" data-live="false">
+                <td class="mono">{{$s.Subdomain}}</td>
+                <td><span class="tag">{{$s.Source}}</span></td>
+                <td class="live-cell"><span class="muted">—</span></td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{else}}<div class="no-data"><div class="no-data-icon">◇</div><div class="no-data-text">No subdomains found</div></div>{{end}}
+    </div>
+
+    <!-- PORTS TAB -->
+    <div id="tab-ports" class="section">
+      <div class="toolbar">
+        <div class="toolbar-left"><div class="section-title">Open Ports</div></div>
+        <div class="toolbar-right"><span class="result-count">Showing <b id="ports-count">{{.TotalPorts}}</b> of {{.TotalPorts}}</span></div>
+      </div>
+      {{if .Ports}}
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="ports-table">
+            <thead><tr>
+              <th data-sort="host">Host <span class="sort-arrow"></span></th>
+              <th data-sort="port">Port <span class="sort-arrow"></span></th>
+              <th data-sort="protocol">Protocol <span class="sort-arrow"></span></th>
+              <th data-sort="service">Service <span class="sort-arrow"></span></th>
+            </tr></thead>
+            <tbody>
+              {{range .Ports}}
+              <tr data-port="{{.Port}}">
+                <td class="mono">{{.Host}}</td>
+                <td class="mono" style="color:var(--accent)">{{.Port}}</td>
+                <td class="muted">{{.Protocol}}</td>
+                <td class="muted">{{.Service}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{else}}<div class="no-data"><div class="no-data-icon">⬚</div><div class="no-data-text">No open ports found or port scan not run</div></div>{{end}}
+    </div>
+
+    <!-- URLS TAB -->
+    <div id="tab-urls" class="section">
+      <div class="toolbar">
+        <div class="toolbar-left"><div class="section-title">Discovered URLs</div></div>
+        <div class="toolbar-right"><span class="result-count">Showing <b id="urls-count">0</b> of {{.TotalURLs}}</span></div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-scroll" style="max-height:65vh">
+          <table id="urls-table">
+            <thead><tr><th>URL</th></tr></thead>
+            <tbody id="urls-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- JS TAB -->
+    <div id="tab-js" class="section">
+      <div class="toolbar">
+        <div class="toolbar-left"><div class="section-title">JavaScript Files</div></div>
+        <div class="toolbar-right"><span class="result-count">Showing <b id="js-count">0</b> of {{.TotalJSFiles}}</span></div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-scroll" style="max-height:65vh">
+          <table id="js-table">
+            <thead><tr><th>JS URL</th></tr></thead>
+            <tbody id="js-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECRETS TAB -->
+    <div id="tab-secrets" class="section">
+      <div class="toolbar">
+        <div class="toolbar-left"><div class="section-title">Discovered Secrets</div></div>
+        <div class="toolbar-right"><span class="result-count">Showing <b id="secrets-count">{{.TotalSecrets}}</b> of {{.TotalSecrets}}</span></div>
+      </div>
+      {{if .Secrets}}
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="secrets-table">
+            <thead><tr>
+              <th data-sort="type">Type <span class="sort-arrow"></span></th>
+              <th data-sort="source">Source <span class="sort-arrow"></span></th>
+              <th data-sort="value">Value (truncated) <span class="sort-arrow"></span></th>
+            </tr></thead>
+            <tbody>
+              {{range .Secrets}}
+              <tr>
+                <td><span class="sev sev-critical">{{.Type}}</span></td>
+                <td class="muted mono">{{.Source}}</td>
+                <td class="mono" style="font-size:11px;word-break:break-all">{{.Value}}</td>
+              </tr>
+              {{end}}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      {{else}}<div class="no-data"><div class="no-data-icon">🔑</div><div class="no-data-text">No secrets found</div></div>{{end}}
+    </div>
+
+  </main>
+</div>
+
+<div class="footer">
+  <span>ReconX — Automated Bug Bounty Framework</span>
+  <span>{{.GeneratedAt}}</span>
+</div>
+
+<script>
+// ─── Embedded scan data (for client-side filtering) ─────────────
+const SCAN_DATA = {
+  subdomains: {{json .Subdomains}},
+  hosts: {{json .Hosts}},
+  ports: {{json .Ports}},
+  findings: {{json .Findings}},
+  secrets: {{json .Secrets}},
+  urls: {{json (urlsToList .)}},
+  jsFiles: {{json (jsFilesToList .)}},
+  liveSubdomains: {{json (liveSubdomainsList .)}},
+  allSources: {{json .AllSources}},
+  allStatusCodes: {{json .AllStatusCodes}},
+  allTech: {{json .AllTech}},
+  allPorts: {{json .AllPorts}},
+  allSeverities: {{json .AllSeverities}}
+};
+
+// Mark subdomains as live if they appear in the hosts list
+(function() {
+  const liveSet = new Set(SCAN_DATA.liveSubdomains);
+  SCAN_DATA.subdomains.forEach(s => { s.Live = liveSet.has(s.Subdomain); });
+})();
+
+// Update the "Live?" column cells based on SCAN_DATA — called when
+// the subdomains tab is shown.
+function updateLiveColumn() {
+  const rows = document.querySelectorAll('#subdomains-table tbody tr');
+  rows.forEach((tr, i) => {
+    const sub = tr.querySelector('td').textContent.trim();
+    const cell = tr.querySelector('.live-cell');
+    if (SCAN_DATA.liveSubdomains.includes(sub)) {
+      cell.innerHTML = '<span class="status-ok">✓ live</span>';
+      tr.dataset.live = 'true';
+    } else {
+      cell.innerHTML = '<span class="muted">—</span>';
+      tr.dataset.live = 'false';
+    }
+  });
+}
+
+// ─── State ───────────────────────────────────────────────────────
+let currentTab = 'findings';
+let activeFilters = {
+  severity: new Set(),
+  status: new Set(),
+  tech: new Set(),
+  source: new Set(),
+  port: new Set()
+};
+let searchQuery = '';
+let sortState = { col: null, dir: 1 };
+
+// ─── Tab switching ───────────────────────────────────────────────
+function showTab(name) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.querySelector('.nav-item[data-tab="' + name + '"]')?.classList.add('active');
+  document.querySelector('.stat-card[data-tab="' + name + '"]')?.classList.add('active');
+  currentTab = name;
+  renderFilters();
+  applyFilters();
+  if (name === 'urls') renderUrlsTable();
+  if (name === 'js') renderJsTable();
+  if (name === 'subdomains') updateLiveColumn();
+  if (name === 'dashboard') renderCharts();
+}
+
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => showTab(item.dataset.tab));
+});
+document.querySelectorAll('.stat-card').forEach(card => {
+  card.addEventListener('click', () => showTab(card.dataset.tab));
+});
+
+// ─── Filter rendering ────────────────────────────────────────────
+function renderFilters() {
+  const container = document.getElementById('filters-container');
+  let html = '<div class="search-wrap"><span class="search-icon">🔍</span><input class="search-box" type="text" placeholder="Search..." value="' + searchQuery + '" oninput="onSearch(this.value)"></div>';
+
+  if (currentTab === 'findings') {
+    html += '<div class="filter-group"><div class="filter-label">Severity</div><div class="chip-row">';
+    SCAN_DATA.allSeverities.forEach(s => {
+      const cls = s === 'critical' ? 'crit' : s === 'high' ? 'high' : s === 'medium' ? 'med' : 'low';
+      const active = activeFilters.severity.has(s) ? ' active' : '';
+      html += '<span class="chip ' + cls + active + '" onclick="toggleFilter(\'severity\',\'' + s + '\',this)">' + s + '</span>';
+    });
+    html += '</div></div>';
+  }
+
+  if (currentTab === 'hosts') {
+    if (SCAN_DATA.allStatusCodes.length) {
+      html += '<div class="filter-group"><div class="filter-label">Status Code</div><div class="chip-row">';
+      SCAN_DATA.allStatusCodes.forEach(c => {
+        const active = activeFilters.status.has(c) ? ' active' : '';
+        html += '<span class="chip' + active + '" onclick="toggleFilter(\'status\',' + c + ',this)">' + c + '</span>';
+      });
+      html += '</div></div>';
+    }
+    if (SCAN_DATA.allTech.length) {
+      html += '<div class="filter-group"><div class="filter-label">Technology</div><div class="chip-row">';
+      SCAN_DATA.allTech.slice(0, 20).forEach(t => {
+        const active = activeFilters.tech.has(t) ? ' active' : '';
+        html += '<span class="chip' + active + '" onclick="toggleFilter(\'tech\',\'' + t.replace(/'/g, "\\'") + '\',this)">' + t + '</span>';
+      });
+      html += '</div></div>';
+    }
+  }
+
+  if (currentTab === 'subdomains' && SCAN_DATA.allSources.length) {
+    html += '<div class="filter-group"><div class="filter-label">Source</div><div class="chip-row">';
+    SCAN_DATA.allSources.forEach(s => {
+      const active = activeFilters.source.has(s) ? ' active' : '';
+      html += '<span class="chip' + active + '" onclick="toggleFilter(\'source\',\'' + s.replace(/'/g, "\\'") + '\',this)">' + s + '</span>';
+    });
+    html += '</div></div>';
+  }
+
+  if (currentTab === 'ports' && SCAN_DATA.allPorts.length) {
+    html += '<div class="filter-group"><div class="filter-label">Port</div><div class="chip-row">';
+    SCAN_DATA.allPorts.forEach(p => {
+      const active = activeFilters.port.has(p) ? ' active' : '';
+      html += '<span class="chip' + active + '" onclick="toggleFilter(\'port\',' + p + ',this)">' + p + '</span>';
+    });
+    html += '</div></div>';
+  }
+
+  // Clear filters button
+  const hasFilters = Object.values(activeFilters).some(s => s.size > 0) || searchQuery;
+  if (hasFilters) {
+    html += '<button class="btn" style="width:100%;margin-top:8px" onclick="clearFilters()">✕ Clear filters</button>';
+  }
+
+  container.innerHTML = html;
+}
+
+function toggleFilter(type, value, el) {
+  const set = activeFilters[type];
+  // Convert value to string for uniformity (works for numbers and strings)
+  const v = String(value);
+  if (set.has(v)) {
+    set.delete(v);
+    el.classList.remove('active');
+  } else {
+    set.add(v);
+    el.classList.add('active');
+  }
+  applyFilters();
+}
+
+function onSearch(q) {
+  searchQuery = q.toLowerCase();
+  applyFilters();
+}
+
+function clearFilters() {
+  Object.values(activeFilters).forEach(s => s.clear());
+  searchQuery = '';
+  renderFilters();
+  applyFilters();
+}
+
+// ─── Filter application ──────────────────────────────────────────
+function applyFilters() {
+  const tab = currentTab;
+  let visible = 0;
+  let total = 0;
+
+  if (tab === 'findings') {
+    document.querySelectorAll('#findings-table tbody tr').forEach(tr => {
+      total++;
+      const sev = (tr.dataset.severity || '').toLowerCase();
+      const text = tr.textContent.toLowerCase();
+      const matchSev = activeFilters.severity.size === 0 || activeFilters.severity.has(sev);
+      const matchSearch = !searchQuery || text.includes(searchQuery);
+      if (matchSev && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
+    });
+    document.getElementById('findings-count').textContent = visible;
+  }
+
+  if (tab === 'hosts') {
+    document.querySelectorAll('#hosts-table tbody tr').forEach(tr => {
+      total++;
+      const status = parseInt(tr.dataset.status) || 0;
+      const tech = (tr.dataset.tech || '').split(',').filter(Boolean);
+      const text = tr.textContent.toLowerCase();
+      const matchStatus = activeFilters.status.size === 0 || activeFilters.status.has(String(status));
+      const matchTech = activeFilters.tech.size === 0 || tech.some(t => activeFilters.tech.has(t));
+      const matchSearch = !searchQuery || text.includes(searchQuery);
+      if (matchStatus && matchTech && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
+    });
+    document.getElementById('hosts-count').textContent = visible;
+  }
+
+  if (tab === 'subdomains') {
+    document.querySelectorAll('#subdomains-table tbody tr').forEach(tr => {
+      total++;
+      const src = tr.dataset.source || 'unknown';
+      const text = tr.textContent.toLowerCase();
+      const matchSource = activeFilters.source.size === 0 || activeFilters.source.has(src);
+      const matchSearch = !searchQuery || text.includes(searchQuery);
+      if (matchSource && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
+    });
+    document.getElementById('subdomains-count').textContent = visible;
+  }
+
+  if (tab === 'ports') {
+    document.querySelectorAll('#ports-table tbody tr').forEach(tr => {
+      total++;
+      const port = parseInt(tr.dataset.port) || 0;
+      const text = tr.textContent.toLowerCase();
+      const matchPort = activeFilters.port.size === 0 || activeFilters.port.has(String(port));
+      const matchSearch = !searchQuery || text.includes(searchQuery);
+      if (matchPort && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
+    });
+    document.getElementById('ports-count').textContent = visible;
+  }
+
+  if (tab === 'secrets') {
+    document.querySelectorAll('#secrets-table tbody tr').forEach(tr => {
+      total++;
+      const text = tr.textContent.toLowerCase();
+      if (!searchQuery || text.includes(searchQuery)) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
+    });
+    document.getElementById('secrets-count').textContent = visible;
+  }
+}
+
+// ─── Sorting ─────────────────────────────────────────────────────
+document.addEventListener('click', e => {
+  if (e.target.tagName === 'TH' && e.target.dataset.sort) {
+    sortTable(e.target);
+  }
+});
+
+function sortTable(th) {
+  const table = th.closest('table');
+  const tbody = table.querySelector('tbody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+  const colIdx = Array.from(th.parentNode.children).indexOf(th);
+  const dir = th.classList.contains('sorted') && th.dataset.dir === 'asc' ? -1 : 1;
+
+  // Clear previous sort markers
+  th.parentNode.querySelectorAll('th').forEach(t => { t.classList.remove('sorted'); t.dataset.dir = ''; t.querySelector('.sort-arrow').textContent = ''; });
+  th.classList.add('sorted');
+  th.dataset.dir = dir === 1 ? 'asc' : 'desc';
+  th.querySelector('.sort-arrow').textContent = dir === 1 ? '▲' : '▼';
+
+  rows.sort((a, b) => {
+    const av = a.children[colIdx].textContent.trim().toLowerCase();
+    const bv = b.children[colIdx].textContent.trim().toLowerCase();
+    // Try numeric compare first
+    const an = parseFloat(av), bn = parseFloat(bv);
+    if (!isNaN(an) && !isNaN(bn)) return (an - bn) * dir;
+    return av.localeCompare(bv) * dir;
+  });
+  rows.forEach(r => tbody.appendChild(r));
+}
+
+// ─── URLs / JS tables (lazy render — too big for inline HTML) ────
+function renderUrlsTable() {
+  const tbody = document.getElementById('urls-tbody');
+  const urls = SCAN_DATA.urls;
+  let visible = 0;
+  tbody.innerHTML = urls.map(u => {
+    const match = !searchQuery || u.toLowerCase().includes(searchQuery);
+    if (match) visible++;
+    return '<tr style="display:' + (match ? '' : 'none') + '"><td class="mono truncate"><a href="' + u + '" target="_blank">' + u + '</a></td></tr>';
+  }).join('');
+  document.getElementById('urls-count').textContent = visible;
+}
+
+function renderJsTable() {
+  const tbody = document.getElementById('js-tbody');
+  const js = SCAN_DATA.jsFiles;
+  let visible = 0;
+  tbody.innerHTML = js.map(u => {
+    const match = !searchQuery || u.toLowerCase().includes(searchQuery);
+    if (match) visible++;
+    return '<tr style="display:' + (match ? '' : 'none') + '"><td class="mono truncate"><a href="' + u + '" target="_blank">' + u + '</a></td></tr>';
+  }).join('');
+  document.getElementById('js-count').textContent = visible;
+}
+
+// ─── Charts ──────────────────────────────────────────────────────
+function renderCharts() {
+  renderSeverityDonut();
+}
+function renderSeverityDonut() {
+  const svg = document.getElementById('severity-donut');
+  if (!svg) return;
+  const data = [
+    { label: 'Critical', value: {{.CriticalCount}}, color: '#ff3d5a' },
+    { label: 'High', value: {{.HighCount}}, color: '#ff6b35' },
+    { label: 'Medium', value: {{.MediumCount}}, color: '#ffd93d' },
+    { label: 'Low', value: {{.LowCount}}, color: '#6bcb77' }
+  ];
+  const total = data.reduce((s, d) => s + d.value, 0);
+  if (total === 0) {
+    svg.innerHTML = '<text x="18" y="20" text-anchor="middle" fill="#64748b" font-size="3">No findings</text>';
+    return;
+  }
+  let offset = 0;
+  const r = 15.9155;  // circumference / 2π for r=16
+  let html = '<circle cx="18" cy="18" r="15.9155" fill="none" stroke="#1c2229" stroke-width="3"/>';
+  data.forEach(d => {
+    if (d.value === 0) return;
+    const pct = (d.value / total) * 100;
+    html += '<circle cx="18" cy="18" r="15.9155" fill="none" stroke="' + d.color + '" stroke-width="3" stroke-dasharray="' + pct + ' ' + (100 - pct) + '" stroke-dashoffset="' + (25 - offset) + '" transform="rotate(-90 18 18)"/>';
+    offset += pct;
+  });
+  html += '<text x="18" y="19" text-anchor="middle" fill="#fff" font-size="6" font-weight="700" font-family="JetBrains Mono">' + total + '</text>';
+  svg.innerHTML = html;
+}
+
+// ─── CSV export ──────────────────────────────────────────────────
+function exportCSV() {
+  const tab = currentTab;
+  let rows = [];
+  let filename = 'reconx-' + tab + '.csv';
+
+  if (tab === 'findings') {
+    rows.push(['Severity', 'Name', 'Target', 'Template', 'Time']);
+    document.querySelectorAll('#findings-table tbody tr').forEach(tr => {
+      if (tr.style.display === 'none') return;
+      const cells = tr.querySelectorAll('td');
+      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim(), cells[3].textContent.trim(), cells[4].textContent.trim()]);
+    });
+  } else if (tab === 'hosts') {
+    rows.push(['Domain', 'Status', 'Title', 'Server', 'Tech', 'IP', 'Tags']);
+    document.querySelectorAll('#hosts-table tbody tr').forEach(tr => {
+      if (tr.style.display === 'none') return;
+      const cells = tr.querySelectorAll('td');
+      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim(), cells[3].textContent.trim(), cells[4].textContent.trim(), cells[5].textContent.trim(), cells[6].textContent.trim()]);
+    });
+  } else if (tab === 'subdomains') {
+    rows.push(['Subdomain', 'Source', 'Live']);
+    document.querySelectorAll('#subdomains-table tbody tr').forEach(tr => {
+      if (tr.style.display === 'none') return;
+      const cells = tr.querySelectorAll('td');
+      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim()]);
+    });
+  } else if (tab === 'ports') {
+    rows.push(['Host', 'Port', 'Protocol', 'Service']);
+    document.querySelectorAll('#ports-table tbody tr').forEach(tr => {
+      if (tr.style.display === 'none') return;
+      const cells = tr.querySelectorAll('td');
+      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim(), cells[3].textContent.trim()]);
+    });
+  } else if (tab === 'secrets') {
+    rows.push(['Type', 'Source', 'Value']);
+    document.querySelectorAll('#secrets-table tbody tr').forEach(tr => {
+      if (tr.style.display === 'none') return;
+      const cells = tr.querySelectorAll('td');
+      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim()]);
+    });
+  } else if (tab === 'urls') {
+    rows.push(['URL']);
+    SCAN_DATA.urls.forEach(u => {
+      if (!searchQuery || u.toLowerCase().includes(searchQuery)) rows.push([u]);
+    });
+  } else if (tab === 'js') {
+    rows.push(['JS URL']);
+    SCAN_DATA.jsFiles.forEach(u => {
+      if (!searchQuery || u.toLowerCase().includes(searchQuery)) rows.push([u]);
+    });
+  } else {
+    alert('No CSV export for this tab');
+    return;
+  }
+
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ─── Init ────────────────────────────────────────────────────────
+renderFilters();
+applyFilters();
+</script>
+</body>
+</html>

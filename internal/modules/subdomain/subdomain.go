@@ -37,6 +37,19 @@ func (m *Module) Run(ctx context.Context) error {
         start := time.Now()
         board := m.log.NewProgressBoard()
 
+        // Live totals in the summary header — gives the user an instant
+        // "is anything happening?" answer without scrolling per-tool rows.
+        board.SetLiveStats(func() map[string]int {
+                stats := m.store.Stats()
+                return map[string]int{
+                        "subdomains": stats["subdomains"],
+                        "live_hosts": stats["live_hosts"],
+                        "urls":       stats["urls"],
+                        "findings":   stats["findings"],
+                        "secrets":    stats["secrets"],
+                }
+        })
+
         var wg sync.WaitGroup
         for _, domain := range m.cfg.Target.Domains {
                 domain := domain
@@ -156,7 +169,9 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
                         results, _ := t.fn(ctx, domain, board)
                         clean    := cleanLines(results)
                         filtered := m.scope.FilterList(clean)
-                        added    := m.store.AddSubdomains(filtered)
+                        // Tag each subdomain with the source that found it
+                        // so the HTML report can filter by source.
+                        added    := m.store.AddSubdomainsFromSource(filtered, t.name)
                         if added > 0 {
                                 board.Update(t.name, len(m.store.GetSubdomains()))
                         }
@@ -437,7 +452,7 @@ func (m *Module) runASNMap(ctx context.Context, asn string, board *logger.Progre
         // pipeline can use them. The old code fetched results but discarded
         // them, so ASN-derived assets were silently lost.
         if len(r.Lines) > 0 {
-                m.store.AddSubdomains(m.scope.FilterList(r.Lines))
+                m.store.AddSubdomainsFromSource(m.scope.FilterList(r.Lines), "asnmap")
         }
 }
 

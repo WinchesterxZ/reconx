@@ -5,6 +5,7 @@ import (
         "fmt"
         "os"
         "path/filepath"
+        "sort"
         "sync"
         "time"
 )
@@ -55,6 +56,7 @@ type Store struct {
         mu sync.RWMutex
 
         Subdomains map[string]bool   // deduplicated subdomain set
+        SubSources map[string]string // subdomain → source that found it (for report filter)
         Hosts      map[string]*Host  // domain → host info
         Ports      []*Port
         URLs       map[string]bool   // deduplicated URL set
@@ -70,6 +72,7 @@ type Store struct {
 func New(scanID string) *Store {
         return &Store{
                 Subdomains: make(map[string]bool),
+                SubSources: make(map[string]string),
                 Hosts:      make(map[string]*Host),
                 URLs:       make(map[string]bool),
                 JSFiles:    make(map[string]bool),
@@ -89,6 +92,33 @@ func (s *Store) AddSubdomain(sub string) bool {
         return true
 }
 
+// AddSubdomainFromSource adds a subdomain and records which source found it.
+// If the subdomain was already known, the source is updated only if the
+// existing source is empty (first source wins for stability).
+func (s *Store) AddSubdomainFromSource(sub, source string) bool {
+        s.mu.Lock()
+        defer s.mu.Unlock()
+        isNew := !s.Subdomains[sub]
+        s.Subdomains[sub] = true
+        if isNew || s.SubSources[sub] == "" {
+                if source != "" {
+                        s.SubSources[sub] = source
+                }
+        }
+        return isNew
+}
+
+// AddSubdomainsFromSource bulk-adds subdomains from a named source.
+func (s *Store) AddSubdomainsFromSource(subs []string, source string) int {
+        count := 0
+        for _, sub := range subs {
+                if s.AddSubdomainFromSource(sub, source) {
+                        count++
+                }
+        }
+        return count
+}
+
 // AddSubdomains bulk-adds subdomains, returns count of new ones
 func (s *Store) AddSubdomains(subs []string) int {
         count := 0
@@ -98,6 +128,27 @@ func (s *Store) AddSubdomains(subs []string) int {
                 }
         }
         return count
+}
+
+// GetSubdomainsWithSource returns a sorted slice of (subdomain, source) pairs.
+// Used by the report to show which tool found each subdomain.
+func (s *Store) GetSubdomainsWithSource() []SubdomainEntry {
+        s.mu.RLock()
+        defer s.mu.RUnlock()
+        out := make([]SubdomainEntry, 0, len(s.Subdomains))
+        for sub := range s.Subdomains {
+                out = append(out, SubdomainEntry{
+                        Subdomain: sub,
+                        Source:    s.SubSources[sub],
+                })
+        }
+        return out
+}
+
+// SubdomainEntry pairs a subdomain with the source that discovered it.
+type SubdomainEntry struct {
+        Subdomain string `json:"subdomain"`
+        Source    string `json:"source"`
 }
 
 // GetSubdomains returns all unique subdomains as a slice
@@ -227,21 +278,33 @@ func (s *Store) SaveJSON(outDir string) error {
         defer s.mu.RUnlock()
 
         type snapshot struct {
-                ScanID     string      `json:"scan_id"`
-                StartTime  time.Time   `json:"start_time"`
-                Duration   string      `json:"duration"`
-                Subdomains []string    `json:"subdomains"`
-                Hosts      []*Host     `json:"hosts"`
-                Ports      []*Port     `json:"ports"`
-                URLs       []string    `json:"urls"`
-                Findings   []*Finding  `json:"findings"`
-                Secrets    []*Secret   `json:"secrets"`
+                ScanID     string           `json:"scan_id"`
+                StartTime  time.Time        `json:"start_time"`
+                Duration   string           `json:"duration"`
+                Subdomains []string         `json:"subdomains"`
+                SubSources []SubdomainEntry `json:"subdomain_sources"`
+                Hosts      []*Host          `json:"hosts"`
+                Ports      []*Port          `json:"ports"`
+                URLs       []string         `json:"urls"`
+                Findings   []*Finding       `json:"findings"`
+                Secrets    []*Secret        `json:"secrets"`
         }
 
         subs := make([]string, 0, len(s.Subdomains))
         for sub := range s.Subdomains {
                 subs = append(subs, sub)
         }
+        // Stable sort for reproducible output
+        sort.Strings(subs)
+
+        subSources := make([]SubdomainEntry, 0, len(subs))
+        for _, sub := range subs {
+                subSources = append(subSources, SubdomainEntry{
+                        Subdomain: sub,
+                        Source:    s.SubSources[sub],
+                })
+        }
+
         hosts := make([]*Host, 0, len(s.Hosts))
         for _, h := range s.Hosts {
                 hosts = append(hosts, h)
@@ -251,17 +314,19 @@ func (s *Store) SaveJSON(outDir string) error {
         for u := range s.URLs {
                 urls_slice = append(urls_slice, u)
         }
+        sort.Strings(urls_slice)
 
         snap := snapshot{
-                ScanID:    s.ScanID,
-                StartTime: s.StartTime,
-                Duration:  time.Since(s.StartTime).Round(time.Second).String(),
+                ScanID:     s.ScanID,
+                StartTime:  s.StartTime,
+                Duration:   time.Since(s.StartTime).Round(time.Second).String(),
                 Subdomains: subs,
-                Hosts:     hosts,
-                Ports:     s.Ports,
-                URLs:      urls_slice,
-                Findings:  s.Findings,
-                Secrets:   s.Secrets,
+                SubSources: subSources,
+                Hosts:      hosts,
+                Ports:      s.Ports,
+                URLs:       urls_slice,
+                Findings:   s.Findings,
+                Secrets:    s.Secrets,
         }
 
         data, err := json.MarshalIndent(snap, "", "  ")

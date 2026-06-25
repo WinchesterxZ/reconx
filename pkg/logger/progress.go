@@ -2,23 +2,46 @@ package logger
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
 
-// ToolStatus represents the current state of a running tool
+// ToolStatus represents the current state of a running tool.
+//
+// Throughput tracking:
+//   - countHistory keeps (timestamp, count) samples for the last 10 seconds
+//   - throughput() computes results/sec from those samples
+//   - lastActivity is updated whenever count increases OR Heartbeat() is called
+//     by the tool (e.g. on every stdout line, even if dedup hasn't bumped count)
+//
+// Stuck detection:
+//   - If now-lastActivity > 30s, the tool is "idle" (shown in yellow)
+//   - If now-lastActivity > 60s, the tool is "stuck" (shown in red, pulsing)
 type ToolStatus struct {
-	Name    string
-	Target  string
-	State   string // "running", "done", "error", "timeout", "skipped"
-	Count   int
-	Start   time.Time
-	Message string // final message for done/error
+	Name         string
+	Target       string
+	State        string // "running", "done", "error", "timeout", "skipped"
+	Count        int
+	Start        time.Time
+	Message      string // final message for done/error
+	lastActivity time.Time
+	countHistory []sample // for throughput calc (last 10s)
 }
 
-// ProgressBoard shows all running tools in a live-updating table.
-// It redraws in-place using ANSI cursor movement so parallel tools
-// never mix their output — you always see a clean status for every tool.
+type sample struct {
+	at    time.Time
+	count int
+}
+
+// stuckIdleAfter is how long without activity before a tool turns yellow.
+const stuckIdleAfter = 30 * time.Second
+
+// stuckAlertAfter is how long without activity before a tool turns red.
+const stuckAlertAfter = 60 * time.Second
+
+// ProgressBoard shows all running tools in a live-updating table with
+// throughput, stuck detection, and an aggregate summary header.
 type ProgressBoard struct {
 	mu       sync.Mutex
 	tools    map[string]*ToolStatus
@@ -28,6 +51,11 @@ type ProgressBoard struct {
 	stopped  bool
 	lines    int  // how many lines we drew last frame (for cursor-up)
 	paused   bool // paused while printing a permanent log line
+
+	// liveStats is an optional callback that returns live counts for the
+	// summary header (subdomains, hosts, urls, findings, secrets, ports).
+	// Set by the pipeline so the board can show real-time totals.
+	liveStats func() map[string]int
 }
 
 // NewProgressBoard creates and starts a progress board
@@ -41,27 +69,63 @@ func (l *Logger) NewProgressBoard() *ProgressBoard {
 	return b
 }
 
+// SetLiveStats registers a callback that returns live counts for the
+// summary header line. The pipeline sets this so the board can show
+// "TOTAL: 1247 subs | 89 live | 5421 urls" updating in real time.
+func (b *ProgressBoard) SetLiveStats(fn func() map[string]int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.liveStats = fn
+}
+
 // Register adds a tool to the board as "running"
 func (b *ProgressBoard) Register(name, target string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := time.Now()
 	if _, exists := b.tools[name]; !exists {
 		b.order = append(b.order, name)
 	}
 	b.tools[name] = &ToolStatus{
-		Name:   name,
-		Target: target,
-		State:  "running",
-		Start:  time.Now(),
+		Name:         name,
+		Target:       target,
+		State:        "running",
+		Start:        now,
+		lastActivity: now,
+		countHistory: []sample{{at: now, count: 0}},
 	}
 }
 
-// Update sets live count for a running tool
+// Update sets live count for a running tool and records a throughput sample.
 func (b *ProgressBoard) Update(name string, count int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	t, ok := b.tools[name]
+	if !ok {
+		return
+	}
+	now := time.Now()
+	if count > t.Count {
+		t.lastActivity = now
+	}
+	t.Count = count
+	t.countHistory = append(t.countHistory, sample{at: now, count: count})
+	// Trim history to last 10 seconds
+	cutoff := now.Add(-10 * time.Second)
+	for len(t.countHistory) > 2 && t.countHistory[0].at.Before(cutoff) {
+		t.countHistory = t.countHistory[1:]
+	}
+}
+
+// Heartbeat records activity for a tool without changing its count.
+// Use this when a tool emits output lines that don't bump the count
+// (e.g., httpx probing a host that turns out to be dead). This keeps
+// the tool from looking "stuck" while it's actively working.
+func (b *ProgressBoard) Heartbeat(name string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
-		t.Count = count
+		t.lastActivity = time.Now()
 	}
 }
 
@@ -70,9 +134,10 @@ func (b *ProgressBoard) Done(name string, count int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
-		t.State   = "done"
-		t.Count   = count
+		t.State = "done"
+		t.Count = count
 		t.Message = fmt.Sprintf("%d results", count)
+		t.lastActivity = time.Now()
 	}
 }
 
@@ -81,8 +146,9 @@ func (b *ProgressBoard) Fail(name, reason string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
-		t.State   = "error"
+		t.State = "error"
 		t.Message = reason
+		t.lastActivity = time.Now()
 	}
 }
 
@@ -91,9 +157,10 @@ func (b *ProgressBoard) Timeout(name string, partial int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if t, ok := b.tools[name]; ok {
-		t.State   = "timeout"
-		t.Count   = partial
+		t.State = "timeout"
+		t.Count = partial
 		t.Message = fmt.Sprintf("kept %d partial results", partial)
+		t.lastActivity = time.Now()
 	}
 }
 
@@ -104,11 +171,13 @@ func (b *ProgressBoard) Skip(name, reason string) {
 	if _, exists := b.tools[name]; !exists {
 		b.order = append(b.order, name)
 	}
+	now := time.Now()
 	b.tools[name] = &ToolStatus{
-		Name:    name,
-		State:   "skipped",
-		Message: reason,
-		Start:   time.Now(),
+		Name:         name,
+		State:        "skipped",
+		Message:      reason,
+		Start:        now,
+		lastActivity: now,
 	}
 }
 
@@ -142,7 +211,7 @@ func (b *ProgressBoard) ResumeAfterLog() {
 }
 
 func (b *ProgressBoard) run() {
-	ticker := time.NewTicker(300 * time.Millisecond)
+	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	frame := 0
 	for {
@@ -157,6 +226,29 @@ func (b *ProgressBoard) run() {
 }
 
 var boardFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// throughput returns results per second over the last 10 seconds.
+// Returns 0 if the tool just started or hasn't received results recently.
+func (t *ToolStatus) throughput() float64 {
+	if len(t.countHistory) < 2 {
+		return 0
+	}
+	first := t.countHistory[0]
+	last := t.countHistory[len(t.countHistory)-1]
+	dt := last.at.Sub(first.at)
+	if dt < time.Second {
+		return 0
+	}
+	return float64(last.count-first.count) / dt.Seconds()
+}
+
+// idleFor returns how long since the tool last had activity.
+func (t *ToolStatus) idleFor() time.Duration {
+	if t.State != "running" {
+		return 0
+	}
+	return time.Since(t.lastActivity)
+}
 
 func (b *ProgressBoard) redraw(frame int) {
 	b.mu.Lock()
@@ -174,63 +266,152 @@ func (b *ProgressBoard) redraw(frame int) {
 	spin := boardFrames[frame%len(boardFrames)]
 	drawn := 0
 
-	// Header
-	running := 0
+	// ── Summary header (line 1) ────────────────────────────────────────────
+	// Shows live totals + tools running/done/failed — gives the user an
+	// instant "is anything happening?" answer at a glance.
+	running, done, failed, skipped := 0, 0, 0, 0
 	for _, name := range b.order {
-		if b.tools[name].State == "running" {
+		switch b.tools[name].State {
+		case "running":
 			running++
+		case "done", "timeout":
+			done++
+		case "error":
+			failed++
+		case "skipped":
+			skipped++
 		}
 	}
 
-	fmt.Printf("\r\033[2K  %s %s\n",
-		c(magenta, "◆"),
-		c(hBlack, fmt.Sprintf("Active tools: %d running", running)))
+	headerParts := []string{
+		c(hBlack, "▶"),
+		cb(hWhite, fmt.Sprintf("%d running", running)),
+	}
+	if done > 0 {
+		headerParts = append(headerParts, c(hGreen, fmt.Sprintf("%d ✓", done)))
+	}
+	if failed > 0 {
+		headerParts = append(headerParts, c(hRed, fmt.Sprintf("%d ✗", failed)))
+	}
+	if skipped > 0 {
+		headerParts = append(headerParts, c(hBlack, fmt.Sprintf("%d ○", skipped)))
+	}
+
+	// Live totals from the pipeline store
+	if b.liveStats != nil {
+		stats := b.liveStats()
+		if s := stats["subdomains"]; s > 0 {
+			headerParts = append(headerParts, c(hCyan, "│"), cb(hCyan, fmt.Sprintf("%d subs", s)))
+		}
+		if h := stats["live_hosts"]; h > 0 {
+			headerParts = append(headerParts, c(hGreen, fmt.Sprintf("%d live", h)))
+		}
+		if u := stats["urls"]; u > 0 {
+			headerParts = append(headerParts, c(hYellow, fmt.Sprintf("%d urls", u)))
+		}
+		if f := stats["findings"]; f > 0 {
+			headerParts = append(headerParts, c(hRed, fmt.Sprintf("%d findings", f)))
+		}
+		if sec := stats["secrets"]; sec > 0 {
+			headerParts = append(headerParts, c(hRed, fmt.Sprintf("%d secrets", sec)))
+		}
+	}
+
+	fmt.Printf("\r\033[2K  %s\n", strings.Join(headerParts, " "))
 	drawn++
 
-	// One line per tool
+	// ── Per-tool lines ────────────────────────────────────────────────────
 	for _, name := range b.order {
 		t := b.tools[name]
 		elapsed := time.Since(t.Start).Round(time.Second)
 
-		var icon, nameStr, detail, elapsedStr string
+		var icon, nameStr, detail, elapsedStr, throughputStr string
 
 		switch t.State {
 		case "running":
-			icon      = c(cyan, spin)
-			nameStr   = c(cyan, fmt.Sprintf("%-20s", name))
-			if t.Count > 0 {
-				detail = c(hGreen, fmt.Sprintf("%-30s", fmt.Sprintf("%d found so far", t.Count)))
-			} else {
-				detail = c(hBlack, fmt.Sprintf("%-30s", truncate(t.Target, 30)))
+			// Stuck detection — change color based on idle time
+			idle := t.idleFor()
+			switch {
+			case idle > stuckAlertAfter:
+				// Stuck: red, pulsing icon
+				if frame%2 == 0 {
+					icon = cb(hRed, "!")
+				} else {
+					icon = cb(red, "!")
+				}
+				nameStr = c(hRed, fmt.Sprintf("%-22s", name))
+			case idle > stuckIdleAfter:
+				// Idle: yellow, slow spin
+				icon = c(yellow, spin)
+				nameStr = c(yellow, fmt.Sprintf("%-22s", name))
+			default:
+				// Active: cyan, fast spin
+				icon = c(cyan, spin)
+				nameStr = c(cyan, fmt.Sprintf("%-22s", name))
 			}
+
+			// Count or target
+			if t.Count > 0 {
+				detail = c(hGreen, fmt.Sprintf("%-22s", fmt.Sprintf("%d found", t.Count)))
+			} else {
+				detail = c(hBlack, fmt.Sprintf("%-22s", truncate(t.Target, 22)))
+			}
+
+			// Throughput (results per second, last 10s)
+			tp := t.throughput()
+			if tp > 0.1 {
+				throughputStr = c(hGreen, fmt.Sprintf("%6.1f/s", tp))
+			} else if t.Count > 0 {
+				throughputStr = c(hBlack, "      –")
+			} else {
+				throughputStr = c(hBlack, "      –")
+			}
+
+			// Idle indicator (only show if idle > 5s)
+			if idle > 5*time.Second {
+				throughputStr += " " + c(hBlack, fmt.Sprintf("(idle %ds)", int(idle.Seconds())))
+			}
+
 			elapsedStr = c(yellow, fmt.Sprintf("  %s", elapsed))
 
 		case "done":
-			icon      = cb(green, "✓")
-			nameStr   = c(hBlack, fmt.Sprintf("%-20s", name))
-			detail    = c(hGreen, fmt.Sprintf("%-30s", t.Message))
+			icon = cb(green, "✓")
+			nameStr = c(hBlack, fmt.Sprintf("%-22s", name))
+			detail = c(hGreen, fmt.Sprintf("%-22s", t.Message))
+			throughputStr = c(hBlack, "      –")
 			elapsedStr = c(hBlack, fmt.Sprintf("  %s", elapsed))
 
 		case "timeout":
-			icon      = c(yellow, "⏱")
-			nameStr   = c(hBlack, fmt.Sprintf("%-20s", name))
-			detail    = c(yellow, fmt.Sprintf("%-30s", t.Message))
+			icon = c(yellow, "⏱")
+			nameStr = c(hBlack, fmt.Sprintf("%-22s", name))
+			detail = c(yellow, fmt.Sprintf("%-22s", t.Message))
+			throughputStr = c(hBlack, "      –")
 			elapsedStr = c(hBlack, fmt.Sprintf("  %s", elapsed))
 
 		case "error":
-			icon      = cb(red, "✗")
-			nameStr   = c(hBlack, fmt.Sprintf("%-20s", name))
-			detail    = c(hRed, fmt.Sprintf("%-30s", truncate(t.Message, 30)))
+			icon = cb(red, "✗")
+			nameStr = c(hBlack, fmt.Sprintf("%-22s", name))
+			detail = c(hRed, fmt.Sprintf("%-22s", truncate(t.Message, 22)))
+			throughputStr = c(hBlack, "      –")
 			elapsedStr = c(hBlack, fmt.Sprintf("  %s", elapsed))
 
 		case "skipped":
-			icon      = c(hBlack, "○")
-			nameStr   = c(hBlack, fmt.Sprintf("%-20s", name))
-			detail    = c(hBlack, fmt.Sprintf("%-30s", truncate(t.Message, 30)))
+			icon = c(hBlack, "○")
+			nameStr = c(hBlack, fmt.Sprintf("%-22s", name))
+			detail = c(hBlack, fmt.Sprintf("%-22s", truncate(t.Message, 22)))
+			throughputStr = c(hBlack, "      –")
 			elapsedStr = ""
 		}
 
-		fmt.Printf("\r\033[2K    %s %s %s%s\n", icon, nameStr, detail, elapsedStr)
+		fmt.Printf("\r\033[2K    %s %s %s %s%s\n",
+			icon, nameStr, detail, throughputStr, elapsedStr)
+		drawn++
+	}
+
+	// ── Footer hint (only when at least one tool is running) ──────────────
+	if running > 0 {
+		fmt.Printf("\r\033[2K  %s\n",
+			c(hBlack, "  press Ctrl+C to stop · tools run in parallel · yellow=idle 30s · red=stuck 60s"))
 		drawn++
 	}
 

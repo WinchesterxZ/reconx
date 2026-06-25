@@ -20,6 +20,11 @@ type Module struct {
         store  *store.Store
         log    *logger.Logger
         outDir string
+
+        // board is set by Run() so per-tool functions can call Heartbeat()
+        // to keep the progress board from showing "stuck" while a tool is
+        // actively working but not yet producing deduplicated results.
+        board *logger.ProgressBoard
 }
 
 func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string) *Module {
@@ -54,6 +59,19 @@ func (m *Module) Run(ctx context.Context) error {
 
         m.log.Info("URL discovery: %d live hosts → running all tools in parallel", len(hosts))
         board := m.log.NewProgressBoard()
+        m.board = board
+
+        // Live totals in the summary header
+        board.SetLiveStats(func() map[string]int {
+                stats := m.store.Stats()
+                return map[string]int{
+                        "subdomains": stats["subdomains"],
+                        "live_hosts": stats["live_hosts"],
+                        "urls":       stats["urls"],
+                        "findings":   stats["findings"],
+                        "secrets":    stats["secrets"],
+                }
+        })
 
         type toolDef struct {
                 name   string
@@ -144,7 +162,12 @@ func (m *Module) runWayback(ctx context.Context, input string) []string {
         r := runner.Run(ctx, path, nil,
                 runner.WithStdin(input),
                 runner.WithTimeout(timeout),
-                runner.WithStderrCallback(func(line string) { m.log.Debug("waybackurls: %s", line) }))
+                runner.WithStderrCallback(func(line string) {
+                        m.log.Debug("waybackurls: %s", line)
+                        if m.board != nil {
+                                m.board.Heartbeat("waybackurls")
+                        }
+                }))
 
         if r.IsTimeout() {
                 m.log.ToolTimeout("waybackurls", len(r.Lines), timeout)
@@ -283,7 +306,12 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
         r := runner.Run(ctx, "katana", args,
                 runner.WithStdin(input),
                 // no timeout — runs until complete
-                runner.WithStderrCallback(func(line string) { m.log.Debug("katana: %s", line) }))
+                runner.WithStderrCallback(func(line string) {
+                        m.log.Debug("katana: %s", line)
+                        if m.board != nil {
+                                m.board.Heartbeat("katana")
+                        }
+                }))
 
         if r.IsTimeout() {
                 m.log.ToolTimeout("katana", len(r.Lines), time.Duration(tcfg.Timeout)*time.Second)
