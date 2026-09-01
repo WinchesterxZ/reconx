@@ -144,20 +144,25 @@ func (m *Module) Run(ctx context.Context) error {
 
 	totalParams := 0
 	if data, err := os.ReadFile(outFile); err == nil {
-		var simpleMap map[string][]string
-		if err := json.Unmarshal(data, &simpleMap); err == nil {
-			for u, pList := range simpleMap {
-				if len(pList) > 0 {
+		var advancedMap map[string]struct {
+			Method string   `json:"method"`
+			Params []string `json:"params"`
+		}
+		if err := json.Unmarshal(data, &advancedMap); err == nil {
+			for u, pData := range advancedMap {
+				if len(pData.Params) > 0 {
 					m.store.AddParamFinding(&store.ParamFinding{
 						URL:    u,
-						Method: "GET",
-						Params: pList,
+						Method: pData.Method,
+						Params: pData.Params,
 						Tool:   "arjun",
 					})
-					totalParams += len(pList)
-					m.log.Info("  [Param] %s -> %s", u, strings.Join(pList, ", "))
+					totalParams += len(pData.Params)
+					m.log.Info("  [Param] %s -> %s", u, strings.Join(pData.Params, ", "))
 				}
 			}
+		} else {
+			m.log.Warn("Failed to parse arjun results: %v", err)
 		}
 	}
 

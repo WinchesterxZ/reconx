@@ -501,6 +501,7 @@
             <thead><tr>
               <th data-sort="type">Type <span class="sort-arrow"></span></th>
               <th data-sort="source">Source <span class="sort-arrow"></span></th>
+              <th data-sort="file">Location (File/URL) <span class="sort-arrow"></span></th>
               <th data-sort="value">Value (truncated) <span class="sort-arrow"></span></th>
             </tr></thead>
             <tbody>
@@ -508,6 +509,9 @@
               <tr>
                 <td><span class="sev sev-critical">{{.Type}}</span></td>
                 <td class="muted mono">{{.Source}}</td>
+                <td class="muted mono" style="font-size:11px;">
+                  {{if .File}}<a href="{{.File}}" target="_blank" style="color:var(--text);text-decoration:underline;">{{.File}}</a>{{else}}-{{end}}
+                </td>
                 <td class="mono" style="font-size:11px;word-break:break-all">{{.Value}}</td>
               </tr>
               {{end}}

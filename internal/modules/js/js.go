@@ -138,58 +138,97 @@ func (m *Module) runSubjs(ctx context.Context, input string) {
 }
 
 func (m *Module) runMantra(ctx context.Context, input string) {
-        start := time.Now()
-        count := strings.Count(input, "\n") + 1
-        m.log.Tool("mantra", fmt.Sprintf("%d JS files — pattern matching", count))
-        m.log.ToolCmd("mantra", []string{}, fmt.Sprintf("[%d URLs via stdin]", count))
+	start := time.Now()
+	count := strings.Count(input, "\n") + 1
+	m.log.Tool("mantra", fmt.Sprintf("%d JS files — pattern matching", count))
+	m.log.ToolCmd("mantra", []string{}, fmt.Sprintf("[%d URLs via stdin]", count))
 
-        secretCount := 0
-        r := runner.Run(ctx, "mantra", nil,
-                runner.WithStdin(input),
-                runner.WithTimeout(5*time.Minute),
-                runner.WithStderrCallback(func(line string) { m.log.Debug("mantra: %s", line) }),
-                runner.WithLineCallback(func(line string) {
-                        if !isSecretLine(line) {
-                                return
-                        }
-                        t := classifySecret(line)
-                        m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(line, 200), Source: "mantra"})
-                        secretCount++
-                        m.log.Secret(t, "mantra", util.Truncate(line, 80))
-                }))
+	secretCount := 0
+	extractFileAndValue := func(line string) (string, string) {
+		line = strings.TrimSpace(line)
+		file := ""
+		val := line
+		fields := strings.Fields(line)
+		for _, f := range fields {
+			if strings.HasPrefix(f, "http") {
+				file = f
+				break
+			}
+		}
+		if file != "" {
+			val = strings.Replace(line, file, "", 1)
+			val = strings.TrimSpace(strings.ReplaceAll(val, "[+]", ""))
+			val = strings.TrimSpace(strings.TrimPrefix(val, "+"))
+		}
+		return file, val
+	}
 
-        if r.IsTimeout() {
-                m.log.ToolTimeout("mantra", secretCount, 5*time.Minute)
-        } else if r.Err != nil {
-                m.log.ToolError("mantra", fmt.Errorf(r.DiagString()), r.Stderr)
-        } else {
-                m.log.ToolDone("mantra", secretCount, time.Since(start))
-                m.log.Debug("mantra: scanned %d lines total, %d matched secret patterns", len(r.Lines), secretCount)
-        }
+	r := runner.Run(ctx, "mantra", nil,
+		runner.WithStdin(input),
+		runner.WithTimeout(5*time.Minute),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("mantra: %s", line) }),
+		runner.WithLineCallback(func(line string) {
+			if !isSecretLine(line) {
+				return
+			}
+			t := classifySecret(line)
+			file, val := extractFileAndValue(line)
+			m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(val, 200), Source: "mantra", File: file})
+			secretCount++
+			m.log.Secret(t, "mantra", util.Truncate(val, 80))
+		}))
+
+	if r.IsTimeout() {
+		m.log.ToolTimeout("mantra", secretCount, 5*time.Minute)
+	} else if r.Err != nil {
+		m.log.ToolError("mantra", fmt.Errorf(r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("mantra", secretCount, time.Since(start))
+		m.log.Debug("mantra: scanned %d lines total, %d matched secret patterns", len(r.Lines), secretCount)
+	}
 }
 
 func (m *Module) runJsecret(ctx context.Context, input string) {
-        start := time.Now()
-        count := strings.Count(input, "\n") + 1
-        m.log.Tool("jsecret", fmt.Sprintf("%d JS files", count))
-        m.log.ToolCmd("jsecret", []string{}, fmt.Sprintf("[%d URLs via stdin]", count))
+	start := time.Now()
+	count := strings.Count(input, "\n") + 1
+	m.log.Tool("jsecret", fmt.Sprintf("%d JS files", count))
+	m.log.ToolCmd("jsecret", []string{}, fmt.Sprintf("[%d URLs via stdin]", count))
 
-        secretCount := 0
-        r := runner.Run(ctx, "jsecret", nil,
-                runner.WithStdin(input),
-                runner.WithTimeout(5*time.Minute),
-                runner.WithStderrCallback(func(line string) { m.log.Debug("jsecret: %s", line) }),
-                runner.WithLineCallback(func(line string) {
-                        if !isSecretLine(line) {
-                                return
-                        }
-                        t := classifySecret(line)
-                        m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(line, 200), Source: "jsecret"})
-                        secretCount++
-                        m.log.Secret(t, "jsecret", util.Truncate(line, 80))
-                }))
+	secretCount := 0
+	extractFileAndValue := func(line string) (string, string) {
+		line = strings.TrimSpace(line)
+		file := ""
+		val := line
+		fields := strings.Fields(line)
+		for _, f := range fields {
+			if strings.HasPrefix(f, "http") {
+				file = f
+				break
+			}
+		}
+		if file != "" {
+			val = strings.Replace(line, file, "", 1)
+			val = strings.TrimSpace(strings.ReplaceAll(val, "[+]", ""))
+		}
+		return file, val
+	}
 
-        if r.IsTimeout() {
+	r := runner.Run(ctx, "jsecret", nil,
+		runner.WithStdin(input),
+		runner.WithTimeout(5*time.Minute),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("jsecret: %s", line) }),
+		runner.WithLineCallback(func(line string) {
+			if !isSecretLine(line) {
+				return
+			}
+			t := classifySecret(line)
+			file, val := extractFileAndValue(line)
+			m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(val, 200), Source: "jsecret", File: file})
+			secretCount++
+			m.log.Secret(t, "jsecret", util.Truncate(val, 80))
+		}))
+
+	if r.IsTimeout() {
                 m.log.ToolTimeout("jsecret", secretCount, 5*time.Minute)
         } else if r.Err != nil {
                 m.log.ToolError("jsecret", fmt.Errorf(r.DiagString()), r.Stderr)
