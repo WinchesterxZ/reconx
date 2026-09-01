@@ -471,14 +471,14 @@ func (p *Pipeline) checkTools() {
                 label string
                 tools []string
         }{
-                {"Subdomain",  []string{"subfinder", "assetfinder", "amass", "findomain", "chaos", "puredns", "dnsx", "github-subdomains", "crobat", "shuffledns", "massdns"}},
-                {"Alive",      []string{"httpx", "curl", "wafw00f", "tlsx"}},
+                {"Subdomain",  []string{"subfinder", "assetfinder", "amass", "findomain", "chaos", "puredns", "dnsx", "github-subdomains", "shuffledns", "massdns"}},
+                {"Alive",      []string{"httpx", "curl", "wafw00f", "tlsx", "subjack"}},
                 {"Ports",      []string{"naabu"}},
-                {"URLs",       []string{"waybackurls", "waymore", "gau", "gauplus", "katana", "hakrawler", "gospider", "paramspider"}},
+                {"URLs",       []string{"waybackurls", "gau", "gauplus", "katana", "hakrawler", "gospider", "paramspider"}},
                 {"DirFuzz",    []string{"feroxbuster", "ffuf", "dirsearch"}},
-                {"Params",     []string{"arjun"}},
+                {"Params",     []string{"arjun", "dalfox", "getJS"}},
                 {"Cloud/CORS", []string{"s3scanner", "cloud_enum", "corsy"}},
-                {"JS/Secrets", []string{"mantra", "jsecret", "subjs", "trufflehog"}},
+                {"JS/Secrets", []string{"mantra", "jsecret", "subjs", "trufflehog", "gitleaks"}},
                 {"Vuln",       []string{"nuclei"}},
         }
 

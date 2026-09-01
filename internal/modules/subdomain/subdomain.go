@@ -126,7 +126,6 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
                 {"github-subs",  "github-subdomains", "github",          m.runGithubSubs},
                 {"dnsx-brute",   "dnsx",              "",                m.runDnsxBrute},
                 {"puredns",      "puredns",           "",                m.runPuredns},
-                {"crobat",       "crobat",            "",                m.runCrobat},
                 {"shuffledns",   "shuffledns",        "",                m.runShuffleDNS},
 
                 // HTTP-only API sources (no binary needed)
@@ -137,10 +136,8 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
                 {"anubis",          "", "", m.runAnubis},
                 {"rapiddns",        "", "", m.runRapidDNS},
                 {"alienvault-otx",  "", "", m.runOTXSubs},
-                {"threatcrowd",     "", "", m.runThreatCrowd},
                 {"urlscan",         "", "", m.runURLScan},
                 {"dnsdumpster",     "", "", m.runDNSDumpster},
-                {"sonar",           "", "", m.runSonar},
                 {"virustotal",      "", "virustotal",     m.runVirusTotal},
                 {"shodan",          "", "shodan",         m.runShodan},
                 {"securitytrails",  "", "securitytrails", m.runSecurityTrails},

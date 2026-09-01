@@ -5,916 +5,850 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ReconX Report — {{.ScanID}}</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@300;400;500;600;700;800&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@300;400;500;600;700;800&family=Inter:wght@400;500;600&display=swap');
 
   :root {
-    --bg: #0a0c0f; --bg2: #0f1215; --bg3: #151a1f; --bg4: #1c2229;
-    --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.13);
-    --text: #e2e8f0; --muted: #64748b; --muted2: #94a3b8;
-    --accent: #00ff88; --accent2: #00d4aa;
-    --critical: #ff3d5a; --high: #ff6b35; --medium: #ffd93d; --low: #6bcb77; --info: #4d9fff;
-    --sidebar-w: 260px;
+    --bg-main: #06080b;
+    --bg-surface: #0f1217;
+    --bg-surface-hover: #161a22;
+    --bg-glass: rgba(15, 18, 23, 0.6);
+    --border-color: rgba(255, 255, 255, 0.06);
+    --border-hover: rgba(255, 255, 255, 0.15);
+    
+    --text-main: #f1f5f9;
+    --text-muted: #94a3b8;
+    --text-dim: #64748b;
+    
+    --accent: #0ea5e9;
+    --accent-glow: rgba(14, 165, 233, 0.3);
+    
+    --critical: #ff2a5f;
+    --high: #ff7b00;
+    --medium: #facc15;
+    --low: #2dd4bf;
+    --info: #3b82f6;
+
+    --sidebar-w: 280px;
+    
+    --font-sans: 'Inter', sans-serif;
+    --font-heading: 'Outfit', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
   }
+
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { height: 100%; }
-  body { background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; font-size: 14px; line-height: 1.6; overflow-x: hidden; }
-  a { color: var(--info); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-
-  /* ─── Layout ─────────────────────────────────────────────── */
-  .app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; }
-  .sidebar { background: var(--bg2); border-right: 1px solid var(--border2); position: sticky; top: 0; height: 100vh; overflow-y: auto; padding: 24px 0; }
-  .main { padding: 32px 40px; min-width: 0; }
-
-  /* ─── Header ─────────────────────────────────────────────── */
-  .topbar { background: linear-gradient(135deg, #0f1215 0%, #0a0c0f 100%); border-bottom: 1px solid var(--border2); padding: 28px 40px; }
-  .topbar-top { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-bottom: 16px; }
-  .logo { font-family: 'JetBrains Mono', monospace; font-size: 22px; font-weight: 700; color: var(--accent); letter-spacing: -1px; }
-  .logo-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .scan-meta { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted); text-align: right; line-height: 1.7; }
-  .targets { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-  .target-tag { background: rgba(0,255,136,0.08); border: 1px solid rgba(0,255,136,0.2); color: var(--accent); padding: 3px 10px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
-
-  /* ─── Stats grid ─────────────────────────────────────────── */
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; background: var(--border); border-bottom: 1px solid var(--border2); }
-  .stat-card { background: var(--bg2); padding: 18px 20px; transition: background 0.15s; cursor: pointer; }
-  .stat-card:hover { background: var(--bg3); }
-  .stat-card.active { background: var(--bg3); border-bottom: 2px solid var(--accent); }
-  .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px; }
-  .stat-value { font-size: 26px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: #fff; }
-  .stat-card.danger .stat-value { color: var(--critical); }
-  .stat-card.warn .stat-value { color: var(--medium); }
-  .stat-card.good .stat-value { color: var(--accent); }
-
-  /* ─── Sidebar ────────────────────────────────────────────── */
-  .nav-section { padding: 0 20px; margin-bottom: 24px; }
-  .nav-title { font-size: 10px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); margin-bottom: 8px; padding: 0 8px; }
-  .nav-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; border-radius: 6px; cursor: pointer; color: var(--muted2); font-size: 13px; font-weight: 500; transition: all 0.12s; margin-bottom: 2px; }
-  .nav-item:hover { background: var(--bg3); color: var(--text); }
-  .nav-item.active { background: rgba(0,255,136,0.08); color: var(--accent); }
-  .nav-item .count { background: var(--bg3); padding: 1px 8px; border-radius: 10px; font-size: 11px; font-family: 'JetBrains Mono', monospace; color: var(--muted); }
-  .nav-item.active .count { background: rgba(0,255,136,0.15); color: var(--accent); }
-  .nav-item .icon { width: 16px; margin-right: 8px; opacity: 0.7; }
-
-  /* ─── Filter chips ───────────────────────────────────────── */
-  .filter-group { margin-bottom: 16px; }
-  .filter-label { font-size: 10px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 6px; }
-  .chip-row { display: flex; flex-wrap: wrap; gap: 4px; }
-  .chip { background: var(--bg3); border: 1px solid var(--border); color: var(--muted2); padding: 3px 9px; border-radius: 12px; font-size: 11px; font-family: 'JetBrains Mono', monospace; cursor: pointer; transition: all 0.12s; user-select: none; }
-  .chip:hover { border-color: var(--border2); color: var(--text); }
-  .chip.active { background: rgba(0,255,136,0.12); border-color: rgba(0,255,136,0.4); color: var(--accent); }
-  .chip.crit { color: var(--critical); }
-  .chip.crit.active { background: rgba(255,61,90,0.15); border-color: rgba(255,61,90,0.4); }
-  .chip.high { color: var(--high); }
-  .chip.high.active { background: rgba(255,107,53,0.15); border-color: rgba(255,107,53,0.4); }
-  .chip.med { color: var(--medium); }
-  .chip.med.active { background: rgba(255,217,61,0.15); border-color: rgba(255,217,61,0.4); }
-  .chip.low { color: var(--low); }
-  .chip.low.active { background: rgba(107,203,119,0.15); border-color: rgba(107,203,119,0.4); }
-
-  /* ─── Search box ─────────────────────────────────────────── */
-  .search-wrap { position: relative; margin-bottom: 16px; }
-  .search-box { width: 100%; padding: 10px 14px 10px 36px; background: var(--bg3); border: 1px solid var(--border2); border-radius: 6px; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 13px; outline: none; transition: border 0.15s; }
-  .search-box:focus { border-color: var(--accent); }
-  .search-icon { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 14px; }
-
-  /* ─── Toolbar ────────────────────────────────────────────── */
-  .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
-  .toolbar-left { display: flex; align-items: center; gap: 12px; }
-  .toolbar-right { display: flex; gap: 8px; }
-  .btn { background: var(--bg3); border: 1px solid var(--border2); color: var(--text); padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.12s; font-family: inherit; }
-  .btn:hover { background: var(--bg4); border-color: var(--accent); color: var(--accent); }
-
-  /* ─── Section / Table ────────────────────────────────────── */
-  .section { display: none; }
-  .section.active { display: block; }
-  .section-title { font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 4px; }
-  .section-sub { font-size: 13px; color: var(--muted); margin-bottom: 20px; }
-
-  .table-wrap { background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px; overflow: hidden; }
-  .table-scroll { overflow-x: auto; max-height: 70vh; overflow-y: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  thead { position: sticky; top: 0; z-index: 10; }
-  th { text-align: left; padding: 11px 14px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); background: var(--bg3); border-bottom: 1px solid var(--border2); cursor: pointer; user-select: none; white-space: nowrap; }
-  th:hover { color: var(--text); }
-  th.sorted { color: var(--accent); }
-  th .sort-arrow { font-size: 9px; margin-left: 4px; opacity: 0.7; }
-  td { padding: 10px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba(255,255,255,0.02); }
-
-  /* ─── Badges ─────────────────────────────────────────────── */
-  .sev { padding: 2px 8px; border-radius: 3px; font-size: 10px; font-weight: 700; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; letter-spacing: 0.5px; display: inline-block; }
-  .sev-critical { background: rgba(255,61,90,0.15); color: #ff3d5a; }
-  .sev-high     { background: rgba(255,107,53,0.15); color: #ff6b35; }
-  .sev-medium   { background: rgba(255,217,61,0.15); color: #ffd93d; }
-  .sev-low      { background: rgba(107,203,119,0.15); color: #6bcb77; }
-  .sev-info     { background: rgba(77,159,255,0.12); color: #4d9fff; }
-
-  .status-ok       { color: var(--accent); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
-  .status-redirect { color: var(--info); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
-  .status-auth     { color: var(--medium); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
-  .status-err      { color: var(--critical); font-family: 'JetBrains Mono', monospace; font-weight: 600; }
-
-  .tag { background: var(--bg3); border: 1px solid var(--border); padding: 1px 7px; border-radius: 3px; font-size: 10px; color: var(--muted2); margin-right: 3px; display: inline-block; margin-bottom: 3px; font-family: 'JetBrains Mono', monospace; }
-  .tag.warn { color: var(--medium); border-color: rgba(255,217,61,0.2); }
-
-  .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
-  .muted { color: var(--muted); }
-  .truncate { max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  /* ─── Charts ─────────────────────────────────────────────── */
-  .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
-  .chart-card { background: var(--bg2); border: 1px solid var(--border2); border-radius: 10px; padding: 20px; }
-  .chart-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 16px; }
-  .donut-wrap { display: flex; align-items: center; gap: 20px; }
-  .donut { width: 120px; height: 120px; flex-shrink: 0; }
-  .donut-legend { font-size: 12px; }
-  .legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; color: var(--muted2); }
-  .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
-  .legend-val { font-family: 'JetBrains Mono', monospace; color: var(--text); margin-left: auto; }
-
-  .bar-chart { display: flex; flex-direction: column; gap: 6px; }
-  .bar-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
-  .bar-label { width: 90px; text-align: right; color: var(--muted2); font-family: 'JetBrains Mono', monospace; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .bar-track { flex: 1; height: 18px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
-  .bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent2), var(--accent)); border-radius: 3px; transition: width 0.4s; }
-  .bar-val { width: 40px; color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
-
-  /* ─── Empty state ────────────────────────────────────────── */
-  .no-data { text-align: center; padding: 60px 20px; color: var(--muted); }
-  .no-data-icon { font-size: 48px; margin-bottom: 12px; opacity: 0.4; }
-  .no-data-text { font-size: 14px; }
-
-  /* ─── Result count ───────────────────────────────────────── */
-  .result-count { font-size: 12px; color: var(--muted); font-family: 'JetBrains Mono', monospace; }
-  .result-count b { color: var(--text); }
-
-  /* ─── Footer ─────────────────────────────────────────────── */
-  .footer { padding: 20px 40px; border-top: 1px solid var(--border); color: var(--muted); font-size: 11px; font-family: 'JetBrains Mono', monospace; display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
-
-  /* ─── Responsive ─────────────────────────────────────────── */
-  @media (max-width: 900px) {
-    .app { grid-template-columns: 1fr; }
-    .sidebar { position: relative; height: auto; border-right: none; border-bottom: 1px solid var(--border2); }
-    .main { padding: 20px; }
-    .topbar { padding: 20px; }
+  
+  html, body { 
+    height: 100%; 
+    background-color: var(--bg-main); 
+    color: var(--text-main); 
+    font-family: var(--font-sans); 
+    font-size: 14px; 
+    line-height: 1.6; 
+    overflow-x: hidden; 
   }
+
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #475569; }
+
+  a { color: var(--accent); text-decoration: none; transition: color 0.2s; }
+  a:hover { color: #38bdf8; text-decoration: underline; }
+
+  h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: 600; }
+  
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border: 1px solid transparent;
+  }
+  .badge-critical { background: rgba(255, 42, 95, 0.1); color: var(--critical); border-color: rgba(255, 42, 95, 0.2); }
+  .badge-high     { background: rgba(255, 123, 0, 0.1); color: var(--high); border-color: rgba(255, 123, 0, 0.2); }
+  .badge-medium   { background: rgba(250, 204, 21, 0.1); color: var(--medium); border-color: rgba(250, 204, 21, 0.2); }
+  .badge-low      { background: rgba(45, 212, 191, 0.1); color: var(--low); border-color: rgba(45, 212, 191, 0.2); }
+  .badge-info     { background: rgba(59, 130, 246, 0.1); color: var(--info); border-color: rgba(59, 130, 246, 0.2); }
+  .badge-outline  { background: transparent; border-color: var(--border-color); color: var(--text-muted); }
+
+  .mono { font-family: var(--font-mono); font-size: 13px; }
+  .text-muted { color: var(--text-muted); }
+  .text-dim { color: var(--text-dim); }
+  .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .app-container { display: flex; height: 100vh; overflow: hidden; }
+  
+  .sidebar {
+    width: var(--sidebar-w);
+    background: var(--bg-surface);
+    border-right: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    z-index: 10;
+  }
+  
+  .brand {
+    padding: 24px;
+    border-bottom: 1px solid var(--border-color);
+    background: linear-gradient(180deg, rgba(14, 165, 233, 0.05) 0%, transparent 100%);
+  }
+  .brand-logo {
+    font-family: var(--font-heading);
+    font-size: 24px;
+    font-weight: 800;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    letter-spacing: -0.5px;
+  }
+  .brand-logo span { color: var(--accent); }
+  .brand-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+  .nav-menu { flex: 1; overflow-y: auto; padding: 20px 16px; }
+  .nav-section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin: 16px 0 8px 12px;
+    font-family: var(--font-heading);
+    font-weight: 600;
+  }
+  
+  .nav-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    color: var(--text-muted);
+    font-family: var(--font-heading);
+    font-weight: 500;
+    transition: all 0.2s ease;
+    margin-bottom: 4px;
+  }
+  .nav-item:hover { background: var(--bg-surface-hover); color: var(--text-main); }
+  .nav-item.active {
+    background: rgba(14, 165, 233, 0.1);
+    color: var(--accent);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+  .nav-item .icon { width: 18px; margin-right: 12px; opacity: 0.8; display: inline-block; text-align: center; }
+  .nav-item .count {
+    background: var(--bg-main);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    border: 1px solid var(--border-color);
+  }
+  .nav-item.active .count {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+  
+  .sidebar-footer {
+    padding: 20px;
+    border-top: 1px solid var(--border-color);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+  }
+
+  .main-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    background: radial-gradient(circle at top right, rgba(14,165,233,0.03), transparent 400px);
+  }
+  
+  .topbar {
+    padding: 20px 40px;
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: var(--bg-glass);
+    backdrop-filter: blur(10px);
+    z-index: 5;
+  }
+  .target-tags { display: flex; flex-wrap: wrap; gap: 8px; }
+  .target-tag {
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border-color);
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: #fff;
+  }
+  .scan-meta { text-align: right; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+  .scan-meta div { margin-bottom: 2px; }
+
+  .content { flex: 1; overflow-y: auto; padding: 32px 40px; }
+
+  .section { display: none; animation: fadeIn 0.3s ease; }
+  .section.active { display: block; }
+  
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+
+  .section-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 24px; }
+  .section-title { font-family: var(--font-heading); font-size: 28px; font-weight: 700; color: #fff; letter-spacing: -0.5px; }
+  .section-subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+
+  .btn {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    padding: 8px 16px;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 500;
+    font-family: var(--font-sans);
+    cursor: pointer;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .btn:hover { background: var(--bg-surface-hover); border-color: var(--border-hover); }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-primary:hover { background: #0284c7; border-color: #0284c7; box-shadow: 0 0 15px var(--accent-glow); }
+  
+  .search-box {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    padding: 10px 16px 10px 36px;
+    border-radius: 8px;
+    color: var(--text-main);
+    font-family: var(--font-mono);
+    font-size: 13px;
+    width: 300px;
+    outline: none;
+    transition: all 0.2s;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2364748b' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'%3E%3C/circle%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'%3E%3C/line%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: 12px center;
+  }
+  .search-box:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 32px; }
+  .stat-card {
+    background: rgba(255,255,255,0.02); border: 1px solid var(--border-color); border-radius: 12px;
+    padding: 24px; position: relative; overflow: hidden; transition: transform 0.2s, border-color 0.2s;
+  }
+  .stat-card:hover { transform: translateY(-2px); border-color: var(--border-hover); }
+  .stat-card::before { content: ''; position: absolute; top: 0; left: 0; width: 4px; height: 100%; background: var(--text-dim); }
+  .stat-card.stat-critical::before { background: var(--critical); }
+  .stat-card.stat-high::before { background: var(--high); }
+  .stat-card.stat-medium::before { background: var(--medium); }
+  .stat-card.stat-good::before { background: var(--low); }
+  
+  .stat-title { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); font-family: var(--font-heading); margin-bottom: 8px; }
+  .stat-value { font-size: 36px; font-weight: 700; font-family: var(--font-mono); color: #fff; line-height: 1; }
+
+  .card-grid { display: flex; flex-direction: column; gap: 16px; }
+  .data-card {
+    background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px;
+    overflow: hidden; transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  .data-card:hover { border-color: var(--border-hover); box-shadow: 0 8px 30px rgba(0,0,0,0.2); }
+  
+  .card-header {
+    padding: 16px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between;
+    align-items: flex-start; background: rgba(255,255,255,0.01);
+  }
+  .card-title { font-family: var(--font-heading); font-size: 18px; font-weight: 600; color: #fff; margin-bottom: 4px; display: flex; align-items: center; gap: 12px; }
+  .card-meta { display: flex; gap: 16px; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+  .card-meta-item { display: flex; align-items: center; gap: 6px; }
+  
+  .card-body { padding: 20px; }
+  .card-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 8px; font-family: var(--font-heading); font-weight: 600; }
+  .card-text { font-size: 14px; color: var(--text-main); margin-bottom: 16px; white-space: pre-wrap; }
+  
+  .code-block {
+    background: var(--bg-main); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px;
+    font-family: var(--font-mono); font-size: 12px; color: #e2e8f0; overflow-x: auto; white-space: pre-wrap;
+    word-break: break-all; position: relative;
+  }
+  .copy-btn {
+    position: absolute; top: 8px; right: 8px; background: var(--bg-surface); border: 1px solid var(--border-color);
+    color: var(--text-muted); padding: 4px 8px; border-radius: 4px; font-size: 11px; cursor: pointer;
+    font-family: var(--font-sans); transition: all 0.2s;
+  }
+  .copy-btn:hover { background: var(--bg-surface-hover); color: #fff; }
+
+  .table-container { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; text-align: left; }
+  th {
+    background: rgba(255,255,255,0.02); padding: 14px 20px; font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--text-dim); border-bottom: 1px solid var(--border-color); cursor: pointer;
+    user-select: none; font-family: var(--font-heading);
+  }
+  th:hover { color: var(--text-main); }
+  td { padding: 14px 20px; border-bottom: 1px solid var(--border-color); font-size: 13px; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.01); }
+  
+  .status-code { font-family: var(--font-mono); font-weight: 600; }
+  .status-2xx { color: var(--low); }
+  .status-3xx { color: var(--info); }
+  .status-4xx { color: var(--medium); }
+  .status-5xx { color: var(--critical); }
+
+  .dense-list { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; }
+  .dense-item { padding: 10px 20px; border-bottom: 1px solid var(--border-color); font-family: var(--font-mono); font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
+  .dense-item:last-child { border-bottom: none; }
+  .dense-item:hover { background: rgba(255,255,255,0.01); }
+  .dense-item-link { color: var(--text-main); word-break: break-all; padding-right: 20px; }
+  .dense-item-link:hover { color: var(--accent); }
+
+  .filters-bar { display: flex; gap: 12px; margin-bottom: 24px; flex-wrap: wrap; align-items: center; }
+  .filter-chip {
+    background: var(--bg-surface); border: 1px solid var(--border-color); padding: 6px 12px; border-radius: 20px;
+    font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none; transition: all 0.2s;
+    font-family: var(--font-sans);
+  }
+  .filter-chip:hover { border-color: var(--border-hover); color: var(--text-main); }
+  .filter-chip.active { background: rgba(14, 165, 233, 0.15); border-color: var(--accent); color: var(--accent); }
+  
+  .empty-state { text-align: center; padding: 80px 20px; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: 12px; }
+  .empty-icon { font-size: 48px; opacity: 0.2; margin-bottom: 16px; }
+  .empty-text { color: var(--text-muted); font-size: 15px; }
+
 </style>
 </head>
 <body>
 
-<div class="topbar">
-  <div class="topbar-top">
-    <div>
-      <div class="logo">⬡ ReconX</div>
-      <div class="logo-sub">Automated Bug Bounty Recon Framework</div>
-    </div>
-    <div class="scan-meta">
-      <div>Scan ID: {{.ScanID}}</div>
-      <div>Started: {{.StartTime.Format "2006-01-02 15:04:05"}}</div>
-      <div>Duration: {{.Duration}}</div>
-      <div>Generated: {{.GeneratedAt}}</div>
-    </div>
-  </div>
-  <div class="targets">
-    {{range .Targets}}<span class="target-tag">{{.}}</span>{{end}}
-  </div>
-</div>
-
-<div class="stats-grid">
-  <div class="stat-card" data-tab="subdomains"><div class="stat-label">Subdomains</div><div class="stat-value">{{.TotalSubdomains}}</div></div>
-  <div class="stat-card good" data-tab="hosts"><div class="stat-label">Live Hosts</div><div class="stat-value">{{.TotalLiveHosts}}</div></div>
-  <div class="stat-card" data-tab="ports"><div class="stat-label">Open Ports</div><div class="stat-value">{{.TotalPorts}}</div></div>
-  <div class="stat-card" data-tab="urls"><div class="stat-label">URLs Found</div><div class="stat-value">{{.TotalURLs}}</div></div>
-  <div class="stat-card" data-tab="js"><div class="stat-label">JS Files</div><div class="stat-value">{{.TotalJSFiles}}</div></div>
-  <div class="stat-card {{if gt .TotalFindings 0}}danger{{end}}" data-tab="findings"><div class="stat-label">Findings</div><div class="stat-value">{{.TotalFindings}}</div></div>
-  <div class="stat-card {{if gt .TotalSecrets 0}}danger{{end}}" data-tab="secrets"><div class="stat-label">Secrets</div><div class="stat-value">{{.TotalSecrets}}</div></div>
-</div>
-
-<div class="app">
+<div class="app-container">
+  
   <!-- Sidebar -->
   <aside class="sidebar">
-    <div class="nav-section">
-      <div class="nav-title">Sections</div>
-      <div class="nav-item active" data-tab="findings"><span><span class="icon">⚑</span>Findings</span><span class="count">{{.TotalFindings}}</span></div>
-      <div class="nav-item" data-tab="hosts"><span><span class="icon">●</span>Live Hosts</span><span class="count">{{.TotalLiveHosts}}</span></div>
-      <div class="nav-item" data-tab="subdomains"><span><span class="icon">◇</span>Subdomains</span><span class="count">{{.TotalSubdomains}}</span></div>
-      <div class="nav-item" data-tab="ports"><span><span class="icon">⬚</span>Ports</span><span class="count">{{.TotalPorts}}</span></div>
-      <div class="nav-item" data-tab="urls"><span><span class="icon">🔗</span>URLs</span><span class="count">{{.TotalURLs}}</span></div>
-      <div class="nav-item" data-tab="js"><span><span class="icon">{ }</span>JS Files</span><span class="count">{{.TotalJSFiles}}</span></div>
-      <div class="nav-item" data-tab="secrets"><span><span class="icon">🔑</span>Secrets</span><span class="count">{{.TotalSecrets}}</span></div>
-      <div class="nav-item" data-tab="dashboard"><span><span class="icon">📊</span>Dashboard</span><span class="count"></span></div>
+    <div class="brand">
+      <div class="brand-logo"><span>⬡</span> ReconX</div>
+      <div class="brand-sub">Automated Bug Bounty Recon</div>
     </div>
-
-    <div class="nav-section" id="filter-panel">
-      <div class="nav-title">Filters</div>
-      <div id="filters-container"></div>
+    
+    <div class="nav-menu">
+      <div class="nav-section-title">Overview</div>
+      <div class="nav-item active" data-tab="dashboard">
+        <div><span class="icon">📊</span>Dashboard</div>
+      </div>
+      
+      <div class="nav-section-title">Results</div>
+      <div class="nav-item" data-tab="findings">
+        <div><span class="icon">⚑</span>Findings</div>
+        <span class="count">{{.TotalFindings}}</span>
+      </div>
+      <div class="nav-item" data-tab="secrets">
+        <div><span class="icon">🔑</span>Secrets</div>
+        <span class="count">{{.TotalSecrets}}</span>
+      </div>
+      <div class="nav-item" data-tab="hosts">
+        <div><span class="icon">🌐</span>Live Hosts</div>
+        <span class="count">{{.TotalLiveHosts}}</span>
+      </div>
+      <div class="nav-item" data-tab="subdomains">
+        <div><span class="icon">⬡</span>Subdomains</div>
+        <span class="count">{{.TotalSubdomains}}</span>
+      </div>
+      <div class="nav-item" data-tab="ports">
+        <div><span class="icon">🔌</span>Ports</div>
+        <span class="count">{{.TotalPorts}}</span>
+      </div>
+      <div class="nav-item" data-tab="urls">
+        <div><span class="icon">🔗</span>URLs</div>
+        <span class="count">{{.TotalURLs}}</span>
+      </div>
+      <div class="nav-item" data-tab="js">
+        <div><span class="icon">📜</span>JS Files</div>
+        <span class="count">{{.TotalJSFiles}}</span>
+      </div>
     </div>
-
-    <div class="nav-section">
-      <div class="nav-title">Export</div>
-      <button class="btn" style="width:100%" onclick="exportCSV()">⬇ Export CSV (current view)</button>
+    
+    <div class="sidebar-footer">
+      Scan ID: {{.ScanID}}
     </div>
   </aside>
 
-  <!-- Main content -->
-  <main class="main">
+  <!-- Main Area -->
+  <div class="main-area">
+    
+    <!-- Topbar -->
+    <header class="topbar">
+      <div class="target-tags">
+        {{range .Targets}}<span class="target-tag">{{.}}</span>{{end}}
+      </div>
+      <div class="scan-meta">
+        <div>Started: <span style="color:#fff">{{.StartTime.Format "2006-01-02 15:04:05"}}</span></div>
+        <div>Duration: <span style="color:#fff">{{.Duration}}</span></div>
+      </div>
+    </header>
 
-    <!-- DASHBOARD TAB -->
-    <div id="tab-dashboard" class="section">
-      <div class="section-title">Dashboard</div>
-      <div class="section-sub">Visual overview of all scan results</div>
+    <!-- Content -->
+    <main class="content">
 
-      <div class="charts-grid">
-        <!-- Severity donut -->
-        <div class="chart-card">
-          <div class="chart-title">Findings by Severity</div>
-          <div class="donut-wrap">
-            <svg class="donut" viewBox="0 0 36 36" id="severity-donut"></svg>
-            <div class="donut-legend">
-              {{range .SeverityChart}}
-              <div class="legend-item">
-                <div class="legend-dot" style="background:var(--{{if eq .Label "Critical"}}critical{{else if eq .Label "High"}}high{{else if eq .Label "Medium"}}medium{{else if eq .Label "Low"}}low{{end}})"></div>
-                <span>{{.Label}}</span>
-                <span class="legend-val">{{.Value}}</span>
+      <!-- DASHBOARD -->
+      <div id="tab-dashboard" class="section active">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">Dashboard Overview</h1>
+            <div class="section-subtitle">High-level summary of the recon execution</div>
+          </div>
+        </div>
+        
+        <div class="stats-grid">
+          <div class="stat-card stat-critical">
+            <div class="stat-title">Critical / High</div>
+            <div class="stat-value">{{.CriticalCount}} / {{.HighCount}}</div>
+          </div>
+          <div class="stat-card stat-medium">
+            <div class="stat-title">Medium / Low</div>
+            <div class="stat-value">{{.MediumCount}} / {{.LowCount}}</div>
+          </div>
+          <div class="stat-card stat-high">
+            <div class="stat-title">Secrets Discovered</div>
+            <div class="stat-value">{{.TotalSecrets}}</div>
+          </div>
+          <div class="stat-card stat-good">
+            <div class="stat-title">Live Hosts</div>
+            <div class="stat-value">{{.TotalLiveHosts}}</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-title">Total URLs</div>
+            <div class="stat-value">{{.TotalURLs}}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FINDINGS -->
+      <div id="tab-findings" class="section">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">Vulnerabilities & Findings</h1>
+            <div class="section-subtitle">Discovered by Nuclei and other scanners</div>
+          </div>
+          <div style="display:flex;gap:12px">
+            <input type="text" class="search-box" id="search-findings" placeholder="Search findings..." oninput="filterFindings()">
+          </div>
+        </div>
+
+        <div class="filters-bar" id="filters-findings">
+          <div class="filter-chip active" data-sev="all" onclick="setSevFilter(this, 'all')">All ({{.TotalFindings}})</div>
+          <div class="filter-chip" data-sev="critical" onclick="setSevFilter(this, 'critical')">Critical ({{.CriticalCount}})</div>
+          <div class="filter-chip" data-sev="high" onclick="setSevFilter(this, 'high')">High ({{.HighCount}})</div>
+          <div class="filter-chip" data-sev="medium" onclick="setSevFilter(this, 'medium')">Medium ({{.MediumCount}})</div>
+          <div class="filter-chip" data-sev="low" onclick="setSevFilter(this, 'low')">Low ({{.LowCount}})</div>
+          <div class="filter-chip" data-sev="info" onclick="setSevFilter(this, 'info')">Info</div>
+        </div>
+
+        {{if .Findings}}
+        <div class="card-grid" id="findings-grid">
+          {{range .Findings}}
+          <div class="data-card finding-card" data-severity="{{lower .Severity}}" data-text="{{lower .Name}} {{lower .Target}} {{lower .Template}}">
+            <div class="card-header">
+              <div>
+                <div class="card-title">{{.Name}}</div>
+                <div class="card-meta">
+                  <div class="card-meta-item"><span class="text-dim">TARGET:</span> <a href="{{.Target}}" target="_blank">{{.Target}}</a></div>
+                  <div class="card-meta-item"><span class="text-dim">TEMPLATE:</span> {{.Template}}</div>
+                  <div class="card-meta-item"><span class="text-dim">TIME:</span> {{.FoundAt.Format "15:04:05"}}</div>
+                </div>
+              </div>
+              <span class="badge badge-{{lower .Severity}}">{{upper .Severity}}</span>
+            </div>
+            
+            <div class="card-body">
+              {{if .Description}}
+              <div class="card-section-title">Description</div>
+              <div class="card-text">{{.Description}}</div>
+              {{end}}
+              
+              {{if .Evidence}}
+              <div class="card-section-title">Evidence & Output</div>
+              <div class="code-block">
+                <button class="copy-btn" onclick="copyToClipboard(this)">Copy</button>
+{{.Evidence}}
               </div>
               {{end}}
             </div>
           </div>
+          {{end}}
         </div>
+        {{else}}
+        <div class="empty-state">
+          <div class="empty-icon">⚑</div>
+          <div class="empty-text">No findings discovered.</div>
+        </div>
+        {{end}}
+      </div>
 
-        <!-- Status codes bar chart -->
-        <div class="chart-card">
-          <div class="chart-title">HTTP Status Codes (top {{len .StatusChart}})</div>
-          <div class="bar-chart">
-            {{range .StatusChart}}
-            <div class="bar-row">
-              <div class="bar-label">{{.Label}}</div>
-              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalLiveHosts 0}}{{divInt .Value $.TotalLiveHosts 100}}{{else}}0{{end}}%"></div></div>
-              <div class="bar-val">{{.Value}}</div>
-            </div>
-            {{else}}
-            <div class="muted" style="text-align:center;padding:20px">No data</div>
-            {{end}}
+      <!-- SECRETS -->
+      <div id="tab-secrets" class="section">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">Exposed Secrets</h1>
+            <div class="section-subtitle">API Keys, Tokens, and Credentials found in JS files and repos</div>
           </div>
+          <input type="text" class="search-box" id="search-secrets" placeholder="Search secrets..." oninput="filterSecrets()">
         </div>
 
-        <!-- Top ports bar chart -->
-        <div class="chart-card">
-          <div class="chart-title">Top Open Ports</div>
-          <div class="bar-chart">
-            {{range .PortChart}}
-            <div class="bar-row">
-              <div class="bar-label">{{.Label}}</div>
-              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalPorts 0}}{{divInt .Value $.TotalPorts 100}}{{else}}0{{end}}%"></div></div>
-              <div class="bar-val">{{.Value}}</div>
+        {{if .Secrets}}
+        <div class="card-grid" id="secrets-grid">
+          {{range .Secrets}}
+          <div class="data-card secret-card" data-text="{{lower .Type}} {{lower .Source}} {{lower .File}}">
+            <div class="card-header">
+              <div>
+                <div class="card-title">{{.Type}}</div>
+                <div class="card-meta">
+                  <div class="card-meta-item"><span class="text-dim">SOURCE:</span> {{.Source}}</div>
+                  {{if .File}}
+                  <div class="card-meta-item"><span class="text-dim">FILE:</span> <a href="{{.File}}" target="_blank" class="truncate" style="max-width:400px">{{.File}}</a></div>
+                  {{end}}
+                </div>
+              </div>
+              <span class="badge badge-critical">SECRET</span>
             </div>
-            {{else}}
-            <div class="muted" style="text-align:center;padding:20px">No data</div>
-            {{end}}
-          </div>
-        </div>
-
-        <!-- Top tech bar chart -->
-        <div class="chart-card">
-          <div class="chart-title">Top Technologies</div>
-          <div class="bar-chart">
-            {{range .TechChart}}
-            <div class="bar-row">
-              <div class="bar-label" title="{{.Label}}">{{.Label}}</div>
-              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalLiveHosts 0}}{{divInt .Value $.TotalLiveHosts 100}}{{else}}0{{end}}%"></div></div>
-              <div class="bar-val">{{.Value}}</div>
+            
+            <div class="card-body">
+              <div class="card-section-title">Matched Value</div>
+              <div class="code-block" style="font-size:14px; padding:20px;">
+                <button class="copy-btn" onclick="copyToClipboard(this)">Copy Secret</button>
+{{.Value}}
+              </div>
             </div>
-            {{else}}
-            <div class="muted" style="text-align:center;padding:20px">No data</div>
-            {{end}}
           </div>
+          {{end}}
         </div>
+        {{else}}
+        <div class="empty-state">
+          <div class="empty-icon">🔑</div>
+          <div class="empty-text">No exposed secrets found.</div>
+        </div>
+        {{end}}
+      </div>
 
-        <!-- Subdomain sources bar chart -->
-        <div class="chart-card">
-          <div class="chart-title">Subdomain Sources (top {{len .SourceChart}})</div>
-          <div class="bar-chart">
-            {{range .SourceChart}}
-            <div class="bar-row">
-              <div class="bar-label" title="{{.Label}}">{{.Label}}</div>
-              <div class="bar-track"><div class="bar-fill" style="width:{{if gt $.TotalSubdomains 0}}{{divInt .Value $.TotalSubdomains 100}}{{else}}0{{end}}%"></div></div>
-              <div class="bar-val">{{.Value}}</div>
-            </div>
-            {{else}}
-            <div class="muted" style="text-align:center;padding:20px">No data</div>
-            {{end}}
+      <!-- HOSTS -->
+      <div id="tab-hosts" class="section">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">Live Hosts</h1>
+            <div class="section-subtitle">Active subdomains resolving to web servers</div>
           </div>
+          <input type="text" class="search-box" id="search-hosts" placeholder="Search hosts..." oninput="filterTable('hosts-table', this.value)">
         </div>
-      </div>
-    </div>
 
-    <!-- FINDINGS TAB -->
-    <div id="tab-findings" class="section active">
-      <div class="toolbar">
-        <div class="toolbar-left">
-          <div class="section-title">Vulnerability Findings</div>
-        </div>
-        <div class="toolbar-right">
-          <span class="result-count">Showing <b id="findings-count">{{.TotalFindings}}</b> of {{.TotalFindings}}</span>
-        </div>
-      </div>
-
-      <div class="charts-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 20px;">
-        <div class="chart-card"><div class="chart-title">Critical</div><div style="font-size:32px;font-weight:700;color:var(--critical);font-family:'JetBrains Mono',monospace">{{.CriticalCount}}</div></div>
-        <div class="chart-card"><div class="chart-title">High</div><div style="font-size:32px;font-weight:700;color:var(--high);font-family:'JetBrains Mono',monospace">{{.HighCount}}</div></div>
-        <div class="chart-card"><div class="chart-title">Medium</div><div style="font-size:32px;font-weight:700;color:var(--medium);font-family:'JetBrains Mono',monospace">{{.MediumCount}}</div></div>
-        <div class="chart-card"><div class="chart-title">Low</div><div style="font-size:32px;font-weight:700;color:var(--low);font-family:'JetBrains Mono',monospace">{{.LowCount}}</div></div>
-      </div>
-
-      {{if .Findings}}
-      <div class="table-wrap">
-        <div class="table-scroll">
-          <table id="findings-table">
-            <thead><tr>
-              <th data-sort="severity">Severity <span class="sort-arrow"></span></th>
-              <th data-sort="name">Finding <span class="sort-arrow"></span></th>
-              <th data-sort="target">Target <span class="sort-arrow"></span></th>
-              <th data-sort="template">Template <span class="sort-arrow"></span></th>
-              <th data-sort="time">Time <span class="sort-arrow"></span></th>
-            </tr></thead>
-            <tbody>
-              {{range .Findings}}
-              <tr data-severity="{{lower .Severity}}">
-                <td><span class="sev {{severityClass .Severity}}">{{upper .Severity}}</span></td>
-                <td>{{.Name}}</td>
-                <td class="mono truncate" title="{{.Target}}">{{.Target}}</td>
-                <td class="mono muted">{{.Template}}</td>
-                <td class="muted" style="white-space:nowrap">{{.FoundAt.Format "15:04:05"}}</td>
-              </tr>
-              {{end}}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      {{else}}<div class="no-data"><div class="no-data-icon">✓</div><div class="no-data-text">No findings — either clean or tools not available</div></div>{{end}}
-    </div>
-
-    <!-- HOSTS TAB -->
-    <div id="tab-hosts" class="section">
-      <div class="toolbar">
-        <div class="toolbar-left"><div class="section-title">Live Hosts</div></div>
-        <div class="toolbar-right"><span class="result-count">Showing <b id="hosts-count">{{.TotalLiveHosts}}</b> of {{.TotalLiveHosts}}</span></div>
-      </div>
-      {{if .Hosts}}
-      <div class="table-wrap">
-        <div class="table-scroll">
+        {{if .Hosts}}
+        <div class="table-container">
           <table id="hosts-table">
-            <thead><tr>
-              <th data-sort="domain">Domain <span class="sort-arrow"></span></th>
-              <th data-sort="status">Status <span class="sort-arrow"></span></th>
-              <th data-sort="title">Title <span class="sort-arrow"></span></th>
-              <th data-sort="server">Server <span class="sort-arrow"></span></th>
-              <th data-sort="tech">Tech <span class="sort-arrow"></span></th>
-              <th data-sort="ip">IP <span class="sort-arrow"></span></th>
-              <th data-sort="tags">Tags <span class="sort-arrow"></span></th>
-            </tr></thead>
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Status</th>
+                <th>Title</th>
+                <th>IP</th>
+                <th>Server/Tech</th>
+              </tr>
+            </thead>
             <tbody>
               {{range .Hosts}}
-              <tr data-status="{{.StatusCode}}" data-tech="{{range .TechStack}}{{.}},{{end}}" data-tags="{{range .Tags}}{{.}},{{end}}">
-                <td class="mono"><a href="{{index .Meta "url"}}" target="_blank">{{.Domain}}</a></td>
-                <td><span class="{{statusClass .StatusCode}}">{{if .StatusCode}}{{.StatusCode}}{{else}}—{{end}}</span></td>
-                <td class="truncate" title="{{.Title}}">{{.Title}}</td>
-                <td class="muted mono">{{.Server}}</td>
-                <td>{{range .TechStack}}<span class="tag">{{.}}</span>{{end}}</td>
-                <td class="muted mono">{{.IP}}</td>
-                <td>{{range .Tags}}<span class="tag warn">{{.}}</span>{{end}}</td>
+              <tr data-text="{{lower .Domain}} {{.StatusCode}} {{lower .Title}} {{.IP}} {{lower .Server}}">
+                <td class="mono"><a href="{{if index .Meta "url"}}{{index .Meta "url"}}{{else}}http://{{.Domain}}{{end}}" target="_blank">{{.Domain}}</a></td>
+                <td>
+                  <span class="status-code {{if ge .StatusCode 500}}status-5xx{{else if ge .StatusCode 400}}status-4xx{{else if ge .StatusCode 300}}status-3xx{{else if ge .StatusCode 200}}status-2xx{{end}}">
+                    {{if .StatusCode}}{{.StatusCode}}{{else}}—{{end}}
+                  </span>
+                </td>
+                <td class="truncate" style="max-width:250px" title="{{.Title}}">{{.Title}}</td>
+                <td class="mono text-muted">{{.IP}}</td>
+                <td>
+                  <div style="display:flex; gap:4px; flex-wrap:wrap">
+                    {{if .Server}}<span class="badge badge-outline">{{.Server}}</span>{{end}}
+                    {{range .TechStack}}<span class="badge badge-outline">{{.}}</span>{{end}}
+                  </div>
+                </td>
               </tr>
               {{end}}
             </tbody>
           </table>
         </div>
+        {{else}}
+        <div class="empty-state"><div class="empty-icon">🌐</div><div class="empty-text">No live hosts detected.</div></div>
+        {{end}}
       </div>
-      {{else}}<div class="no-data"><div class="no-data-icon">●</div><div class="no-data-text">No live hosts found</div></div>{{end}}
-    </div>
 
-    <!-- SUBDOMAINS TAB -->
-    <div id="tab-subdomains" class="section">
-      <div class="toolbar">
-        <div class="toolbar-left"><div class="section-title">All Subdomains</div></div>
-        <div class="toolbar-right"><span class="result-count">Showing <b id="subdomains-count">{{.TotalSubdomains}}</b> of {{.TotalSubdomains}}</span></div>
-      </div>
-      {{if .Subdomains}}
-      <div class="table-wrap">
-        <div class="table-scroll">
-          <table id="subdomains-table">
-            <thead><tr>
-              <th data-sort="subdomain" style="width:60%">Subdomain <span class="sort-arrow"></span></th>
-              <th data-sort="source">Source <span class="sort-arrow"></span></th>
-              <th data-sort="live">Live? <span class="sort-arrow"></span></th>
-            </tr></thead>
+      <!-- SUBDOMAINS -->
+      <div id="tab-subdomains" class="section">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">All Subdomains</h1>
+            <div class="section-subtitle">Raw enumerated subdomains across all sources</div>
+          </div>
+          <input type="text" class="search-box" id="search-subs" placeholder="Search subdomains..." oninput="filterTable('subs-table', this.value)">
+        </div>
+
+        {{if .Subdomains}}
+        <div class="table-container">
+          <table id="subs-table">
+            <thead>
+              <tr>
+                <th>Subdomain</th>
+                <th>Source</th>
+              </tr>
+            </thead>
             <tbody>
-              {{range $i, $s := .Subdomains}}
-              <tr data-source="{{if $s.Source}}{{$s.Source}}{{else}}unknown{{end}}" data-live="false">
-                <td class="mono">{{$s.Subdomain}}</td>
-                <td><span class="tag">{{$s.Source}}</span></td>
-                <td class="live-cell"><span class="muted">—</span></td>
+              {{range .Subdomains}}
+              <tr data-text="{{lower .Subdomain}} {{lower .Source}}">
+                <td class="mono">{{.Subdomain}}</td>
+                <td><span class="badge badge-outline">{{.Source}}</span></td>
               </tr>
               {{end}}
             </tbody>
           </table>
         </div>
+        {{else}}
+        <div class="empty-state"><div class="empty-icon">⬡</div><div class="empty-text">No subdomains found.</div></div>
+        {{end}}
       </div>
-      {{else}}<div class="no-data"><div class="no-data-icon">◇</div><div class="no-data-text">No subdomains found</div></div>{{end}}
-    </div>
 
-    <!-- PORTS TAB -->
-    <div id="tab-ports" class="section">
-      <div class="toolbar">
-        <div class="toolbar-left"><div class="section-title">Open Ports</div></div>
-        <div class="toolbar-right"><span class="result-count">Showing <b id="ports-count">{{.TotalPorts}}</b> of {{.TotalPorts}}</span></div>
-      </div>
-      {{if .Ports}}
-      <div class="table-wrap">
-        <div class="table-scroll">
+      <!-- PORTS -->
+      <div id="tab-ports" class="section">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">Open Ports</h1>
+            <div class="section-subtitle">Discovered by port scanners</div>
+          </div>
+          <input type="text" class="search-box" id="search-ports" placeholder="Search ports..." oninput="filterTable('ports-table', this.value)">
+        </div>
+
+        {{if .Ports}}
+        <div class="table-container">
           <table id="ports-table">
-            <thead><tr>
-              <th data-sort="host">Host <span class="sort-arrow"></span></th>
-              <th data-sort="port">Port <span class="sort-arrow"></span></th>
-              <th data-sort="protocol">Protocol <span class="sort-arrow"></span></th>
-              <th data-sort="service">Service <span class="sort-arrow"></span></th>
-            </tr></thead>
+            <thead>
+              <tr>
+                <th>Host</th>
+                <th>Port</th>
+                <th>Protocol</th>
+                <th>Service</th>
+              </tr>
+            </thead>
             <tbody>
               {{range .Ports}}
-              <tr data-port="{{.Port}}">
+              <tr data-text="{{lower .Host}} {{.Port}} {{lower .Protocol}} {{lower .Service}}">
                 <td class="mono">{{.Host}}</td>
-                <td class="mono" style="color:var(--accent)">{{.Port}}</td>
-                <td class="muted">{{.Protocol}}</td>
-                <td class="muted">{{.Service}}</td>
+                <td class="mono" style="color:var(--accent); font-weight:700">{{.Port}}</td>
+                <td class="text-muted">{{upper .Protocol}}</td>
+                <td class="text-muted">{{.Service}}</td>
               </tr>
               {{end}}
             </tbody>
           </table>
         </div>
+        {{else}}
+        <div class="empty-state"><div class="empty-icon">🔌</div><div class="empty-text">No open ports found.</div></div>
+        {{end}}
       </div>
-      {{else}}<div class="no-data"><div class="no-data-icon">⬚</div><div class="no-data-text">No open ports found or port scan not run</div></div>{{end}}
-    </div>
 
-    <!-- URLS TAB -->
-    <div id="tab-urls" class="section">
-      <div class="toolbar">
-        <div class="toolbar-left"><div class="section-title">Discovered URLs</div></div>
-        <div class="toolbar-right"><span class="result-count">Showing <b id="urls-count">0</b> of {{.TotalURLs}}</span></div>
-      </div>
-      <div class="table-wrap">
-        <div class="table-scroll" style="max-height:65vh">
-          <table id="urls-table">
-            <thead><tr><th>URL</th></tr></thead>
-            <tbody id="urls-tbody"></tbody>
-          </table>
+      <!-- URLS -->
+      <div id="tab-urls" class="section">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">Discovered URLs</h1>
+            <div class="section-subtitle">Crawled endpoints, parameters, and paths</div>
+          </div>
+          <div style="display:flex;gap:12px">
+            <button class="btn" onclick="copyAllList('urls-list')">Copy All</button>
+            <input type="text" class="search-box" id="search-urls" placeholder="Search URLs..." oninput="filterList('urls-list', this.value)">
+          </div>
+        </div>
+        
+        <div class="dense-list" id="urls-list">
+          <!-- Populated by JS for performance if huge -->
         </div>
       </div>
-    </div>
 
-    <!-- JS TAB -->
-    <div id="tab-js" class="section">
-      <div class="toolbar">
-        <div class="toolbar-left"><div class="section-title">JavaScript Files</div></div>
-        <div class="toolbar-right"><span class="result-count">Showing <b id="js-count">0</b> of {{.TotalJSFiles}}</span></div>
-      </div>
-      <div class="table-wrap">
-        <div class="table-scroll" style="max-height:65vh">
-          <table id="js-table">
-            <thead><tr><th>JS URL</th></tr></thead>
-            <tbody id="js-tbody"></tbody>
-          </table>
+      <!-- JS FILES -->
+      <div id="tab-js" class="section">
+        <div class="section-header">
+          <div>
+            <h1 class="section-title">JavaScript Files</h1>
+            <div class="section-subtitle">Discovered JS assets for analysis</div>
+          </div>
+          <div style="display:flex;gap:12px">
+            <button class="btn" onclick="copyAllList('js-list')">Copy All</button>
+            <input type="text" class="search-box" id="search-js" placeholder="Search JS files..." oninput="filterList('js-list', this.value)">
+          </div>
+        </div>
+        
+        <div class="dense-list" id="js-list">
+          <!-- Populated by JS for performance if huge -->
         </div>
       </div>
-    </div>
 
-    <!-- SECRETS TAB -->
-    <div id="tab-secrets" class="section">
-      <div class="toolbar">
-        <div class="toolbar-left"><div class="section-title">Discovered Secrets</div></div>
-        <div class="toolbar-right"><span class="result-count">Showing <b id="secrets-count">{{.TotalSecrets}}</b> of {{.TotalSecrets}}</span></div>
-      </div>
-      {{if .Secrets}}
-      <div class="table-wrap">
-        <div class="table-scroll">
-          <table id="secrets-table">
-            <thead><tr>
-              <th data-sort="type">Type <span class="sort-arrow"></span></th>
-              <th data-sort="source">Source <span class="sort-arrow"></span></th>
-              <th data-sort="file">Location (File/URL) <span class="sort-arrow"></span></th>
-              <th data-sort="value">Value (truncated) <span class="sort-arrow"></span></th>
-            </tr></thead>
-            <tbody>
-              {{range .Secrets}}
-              <tr>
-                <td><span class="sev sev-critical">{{.Type}}</span></td>
-                <td class="muted mono">{{.Source}}</td>
-                <td class="muted mono" style="font-size:11px;">
-                  {{if .File}}<a href="{{.File}}" target="_blank" style="color:var(--text);text-decoration:underline;">{{.File}}</a>{{else}}-{{end}}
-                </td>
-                <td class="mono" style="font-size:11px;word-break:break-all">{{.Value}}</td>
-              </tr>
-              {{end}}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      {{else}}<div class="no-data"><div class="no-data-icon">🔑</div><div class="no-data-text">No secrets found</div></div>{{end}}
-    </div>
-
-  </main>
-</div>
-
-<div class="footer">
-  <span>ReconX — Automated Bug Bounty Framework</span>
-  <span>{{.GeneratedAt}}</span>
+    </main>
+  </div>
 </div>
 
 <script>
-// ─── Embedded scan data (for client-side filtering) ─────────────
-const SCAN_DATA = {
-  subdomains: {{json .Subdomains}},
-  hosts: {{json .Hosts}},
-  ports: {{json .Ports}},
-  findings: {{json .Findings}},
-  secrets: {{json .Secrets}},
-  urls: {{json (urlsToList .)}},
-  jsFiles: {{json (jsFilesToList .)}},
-  liveSubdomains: {{json (liveSubdomainsList .)}},
-  allSources: {{json .AllSources}},
-  allStatusCodes: {{json .AllStatusCodes}},
-  allTech: {{json .AllTech}},
-  allPorts: {{json .AllPorts}},
-  allSeverities: {{json .AllSeverities}}
-};
-
-// Mark subdomains as live if they appear in the hosts list
-(function() {
-  const liveSet = new Set(SCAN_DATA.liveSubdomains);
-  SCAN_DATA.subdomains.forEach(s => { s.Live = liveSet.has(s.Subdomain); });
-})();
-
-// Update the "Live?" column cells based on SCAN_DATA — called when
-// the subdomains tab is shown.
-function updateLiveColumn() {
-  const rows = document.querySelectorAll('#subdomains-table tbody tr');
-  rows.forEach((tr, i) => {
-    const sub = tr.querySelector('td').textContent.trim();
-    const cell = tr.querySelector('.live-cell');
-    if (SCAN_DATA.liveSubdomains.includes(sub)) {
-      cell.innerHTML = '<span class="status-ok">✓ live</span>';
-      tr.dataset.live = 'true';
-    } else {
-      cell.innerHTML = '<span class="muted">—</span>';
-      tr.dataset.live = 'false';
-    }
-  });
-}
-
-// ─── State ───────────────────────────────────────────────────────
-let currentTab = 'findings';
-let activeFilters = {
-  severity: new Set(),
-  status: new Set(),
-  tech: new Set(),
-  source: new Set(),
-  port: new Set()
-};
-let searchQuery = '';
-let sortState = { col: null, dir: 1 };
-
-// ─── Tab switching ───────────────────────────────────────────────
-function showTab(name) {
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.stat-card').forEach(c => c.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.add('active');
-  document.querySelector('.nav-item[data-tab="' + name + '"]')?.classList.add('active');
-  document.querySelector('.stat-card[data-tab="' + name + '"]')?.classList.add('active');
-  currentTab = name;
-  renderFilters();
-  applyFilters();
-  if (name === 'urls') renderUrlsTable();
-  if (name === 'js') renderJsTable();
-  if (name === 'subdomains') updateLiveColumn();
-  if (name === 'dashboard') renderCharts();
-}
-
+// Tab Switching
 document.querySelectorAll('.nav-item').forEach(item => {
-  item.addEventListener('click', () => showTab(item.dataset.tab));
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    
+    item.classList.add('active');
+    const tabId = item.getAttribute('data-tab');
+    document.getElementById('tab-' + tabId).classList.add('active');
+    
+    if(tabId === 'urls') renderBigList('urls-list', SCAN_DATA.urls);
+    if(tabId === 'js') renderBigList('js-list', SCAN_DATA.jsFiles);
+  });
 });
-document.querySelectorAll('.stat-card').forEach(card => {
-  card.addEventListener('click', () => showTab(card.dataset.tab));
-});
 
-// ─── Filter rendering ────────────────────────────────────────────
-function renderFilters() {
-  const container = document.getElementById('filters-container');
-  let html = '<div class="search-wrap"><span class="search-icon">🔍</span><input class="search-box" type="text" placeholder="Search..." value="' + searchQuery + '" oninput="onSearch(this.value)"></div>';
+// Clipboard Helper
+function copyToClipboard(btn) {
+  // get the text content of the parent div, excluding the button's text
+  const container = btn.parentElement;
+  // Clone to remove button text
+  const clone = container.cloneNode(true);
+  clone.querySelector('button').remove();
+  const text = clone.textContent.trim();
+  
+  navigator.clipboard.writeText(text).then(() => {
+    const originalText = btn.innerText;
+    btn.innerText = "Copied!";
+    btn.style.background = "var(--low)";
+    btn.style.color = "#000";
+    setTimeout(() => {
+      btn.innerText = originalText;
+      btn.style.background = "";
+      btn.style.color = "";
+    }, 2000);
+  });
+}
 
-  if (currentTab === 'findings') {
-    html += '<div class="filter-group"><div class="filter-label">Severity</div><div class="chip-row">';
-    SCAN_DATA.allSeverities.forEach(s => {
-      const cls = s === 'critical' ? 'crit' : s === 'high' ? 'high' : s === 'medium' ? 'med' : 'low';
-      const active = activeFilters.severity.has(s) ? ' active' : '';
-      html += '<span class="chip ' + cls + active + '" onclick="toggleFilter(\'severity\',\'' + s + '\',this)">' + s + '</span>';
-    });
-    html += '</div></div>';
-  }
+function copyAllList(listId) {
+  const container = document.getElementById(listId);
+  const items = container.querySelectorAll('.dense-item-link');
+  const urls = Array.from(items).map(a => a.href).join('\n');
+  navigator.clipboard.writeText(urls).then(() => alert('Copied ' + items.length + ' items to clipboard!'));
+}
 
-  if (currentTab === 'hosts') {
-    if (SCAN_DATA.allStatusCodes.length) {
-      html += '<div class="filter-group"><div class="filter-label">Status Code</div><div class="chip-row">';
-      SCAN_DATA.allStatusCodes.forEach(c => {
-        const active = activeFilters.status.has(c) ? ' active' : '';
-        html += '<span class="chip' + active + '" onclick="toggleFilter(\'status\',' + c + ',this)">' + c + '</span>';
-      });
-      html += '</div></div>';
+// ─── Filtering Logic ───
+let currentSevFilter = 'all';
+
+function setSevFilter(el, sev) {
+  document.querySelectorAll('#filters-findings .filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  currentSevFilter = sev;
+  filterFindings();
+}
+
+function filterFindings() {
+  const q = document.getElementById('search-findings').value.toLowerCase();
+  const cards = document.querySelectorAll('.finding-card');
+  
+  cards.forEach(card => {
+    const text = card.getAttribute('data-text');
+    const severity = card.getAttribute('data-severity');
+    
+    const matchesSearch = text.includes(q);
+    const matchesSev = (currentSevFilter === 'all' || severity === currentSevFilter);
+    
+    if (matchesSearch && matchesSev) {
+      card.style.display = '';
+    } else {
+      card.style.display = 'none';
     }
-    if (SCAN_DATA.allTech.length) {
-      html += '<div class="filter-group"><div class="filter-label">Technology</div><div class="chip-row">';
-      SCAN_DATA.allTech.slice(0, 20).forEach(t => {
-        const active = activeFilters.tech.has(t) ? ' active' : '';
-        html += '<span class="chip' + active + '" onclick="toggleFilter(\'tech\',\'' + t.replace(/'/g, "\\'") + '\',this)">' + t + '</span>';
-      });
-      html += '</div></div>';
-    }
-  }
+  });
+}
 
-  if (currentTab === 'subdomains' && SCAN_DATA.allSources.length) {
-    html += '<div class="filter-group"><div class="filter-label">Source</div><div class="chip-row">';
-    SCAN_DATA.allSources.forEach(s => {
-      const active = activeFilters.source.has(s) ? ' active' : '';
-      html += '<span class="chip' + active + '" onclick="toggleFilter(\'source\',\'' + s.replace(/'/g, "\\'") + '\',this)">' + s + '</span>';
-    });
-    html += '</div></div>';
-  }
+function filterSecrets() {
+  const q = document.getElementById('search-secrets').value.toLowerCase();
+  const cards = document.querySelectorAll('.secret-card');
+  cards.forEach(card => {
+    const text = card.getAttribute('data-text');
+    card.style.display = text.includes(q) ? '' : 'none';
+  });
+}
 
-  if (currentTab === 'ports' && SCAN_DATA.allPorts.length) {
-    html += '<div class="filter-group"><div class="filter-label">Port</div><div class="chip-row">';
-    SCAN_DATA.allPorts.forEach(p => {
-      const active = activeFilters.port.has(p) ? ' active' : '';
-      html += '<span class="chip' + active + '" onclick="toggleFilter(\'port\',' + p + ',this)">' + p + '</span>';
-    });
-    html += '</div></div>';
-  }
+function filterTable(tableId, query) {
+  const q = query.toLowerCase();
+  const rows = document.querySelectorAll('#' + tableId + ' tbody tr');
+  rows.forEach(row => {
+    const text = row.getAttribute('data-text');
+    row.style.display = text.includes(q) ? '' : 'none';
+  });
+}
 
-  // Clear filters button
-  const hasFilters = Object.values(activeFilters).some(s => s.size > 0) || searchQuery;
-  if (hasFilters) {
-    html += '<button class="btn" style="width:100%;margin-top:8px" onclick="clearFilters()">✕ Clear filters</button>';
-  }
+function filterList(listId, query) {
+  const q = query.toLowerCase();
+  const items = document.querySelectorAll('#' + listId + ' .dense-item');
+  items.forEach(item => {
+    // using href as text
+    const text = item.querySelector('a').href.toLowerCase();
+    item.style.display = text.includes(q) ? 'flex' : 'none';
+  });
+}
 
+// Data injection from Go
+const SCAN_DATA = {
+  urls: {{json (urlsToList .)}},
+  jsFiles: {{json (jsFilesToList .)}}
+};
+
+// Lazy render large lists to avoid blocking main thread on load
+let urlsRendered = false;
+let jsRendered = false;
+
+function renderBigList(containerId, dataArray) {
+  if (containerId === 'urls-list' && urlsRendered) return;
+  if (containerId === 'js-list' && jsRendered) return;
+  
+  const container = document.getElementById(containerId);
+  // Render up to 5000 items directly for performance
+  const limit = Math.min(dataArray.length, 5000);
+  
+  let html = '';
+  for(let i=0; i<limit; i++) {
+    html += `<div class="dense-item"><a href="${dataArray[i]}" target="_blank" class="dense-item-link">${dataArray[i]}</a><button class="copy-btn" onclick="copyListSingle(this, '${dataArray[i]}')">Copy</button></div>`;
+  }
+  
+  if (dataArray.length > 5000) {
+    html += `<div class="dense-item text-muted" style="justify-content:center">Showing first 5000 of ${dataArray.length}. Export raw JSON to see all.</div>`;
+  }
+  
+  if (dataArray.length === 0) {
+    html = `<div class="empty-state"><div class="empty-icon">🔗</div><div class="empty-text">No items found.</div></div>`;
+  }
+  
   container.innerHTML = html;
+  
+  if (containerId === 'urls-list') urlsRendered = true;
+  if (containerId === 'js-list') jsRendered = true;
 }
 
-function toggleFilter(type, value, el) {
-  const set = activeFilters[type];
-  // Convert value to string for uniformity (works for numbers and strings)
-  const v = String(value);
-  if (set.has(v)) {
-    set.delete(v);
-    el.classList.remove('active');
-  } else {
-    set.add(v);
-    el.classList.add('active');
-  }
-  applyFilters();
-}
-
-function onSearch(q) {
-  searchQuery = q.toLowerCase();
-  applyFilters();
-}
-
-function clearFilters() {
-  Object.values(activeFilters).forEach(s => s.clear());
-  searchQuery = '';
-  renderFilters();
-  applyFilters();
-}
-
-// ─── Filter application ──────────────────────────────────────────
-function applyFilters() {
-  const tab = currentTab;
-  let visible = 0;
-  let total = 0;
-
-  if (tab === 'findings') {
-    document.querySelectorAll('#findings-table tbody tr').forEach(tr => {
-      total++;
-      const sev = (tr.dataset.severity || '').toLowerCase();
-      const text = tr.textContent.toLowerCase();
-      const matchSev = activeFilters.severity.size === 0 || activeFilters.severity.has(sev);
-      const matchSearch = !searchQuery || text.includes(searchQuery);
-      if (matchSev && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
-    });
-    document.getElementById('findings-count').textContent = visible;
-  }
-
-  if (tab === 'hosts') {
-    document.querySelectorAll('#hosts-table tbody tr').forEach(tr => {
-      total++;
-      const status = parseInt(tr.dataset.status) || 0;
-      const tech = (tr.dataset.tech || '').split(',').filter(Boolean);
-      const text = tr.textContent.toLowerCase();
-      const matchStatus = activeFilters.status.size === 0 || activeFilters.status.has(String(status));
-      const matchTech = activeFilters.tech.size === 0 || tech.some(t => activeFilters.tech.has(t));
-      const matchSearch = !searchQuery || text.includes(searchQuery);
-      if (matchStatus && matchTech && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
-    });
-    document.getElementById('hosts-count').textContent = visible;
-  }
-
-  if (tab === 'subdomains') {
-    document.querySelectorAll('#subdomains-table tbody tr').forEach(tr => {
-      total++;
-      const src = tr.dataset.source || 'unknown';
-      const text = tr.textContent.toLowerCase();
-      const matchSource = activeFilters.source.size === 0 || activeFilters.source.has(src);
-      const matchSearch = !searchQuery || text.includes(searchQuery);
-      if (matchSource && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
-    });
-    document.getElementById('subdomains-count').textContent = visible;
-  }
-
-  if (tab === 'ports') {
-    document.querySelectorAll('#ports-table tbody tr').forEach(tr => {
-      total++;
-      const port = parseInt(tr.dataset.port) || 0;
-      const text = tr.textContent.toLowerCase();
-      const matchPort = activeFilters.port.size === 0 || activeFilters.port.has(String(port));
-      const matchSearch = !searchQuery || text.includes(searchQuery);
-      if (matchPort && matchSearch) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
-    });
-    document.getElementById('ports-count').textContent = visible;
-  }
-
-  if (tab === 'secrets') {
-    document.querySelectorAll('#secrets-table tbody tr').forEach(tr => {
-      total++;
-      const text = tr.textContent.toLowerCase();
-      if (!searchQuery || text.includes(searchQuery)) { tr.style.display = ''; visible++; } else { tr.style.display = 'none'; }
-    });
-    document.getElementById('secrets-count').textContent = visible;
-  }
-}
-
-// ─── Sorting ─────────────────────────────────────────────────────
-document.addEventListener('click', e => {
-  if (e.target.tagName === 'TH' && e.target.dataset.sort) {
-    sortTable(e.target);
-  }
-});
-
-function sortTable(th) {
-  const table = th.closest('table');
-  const tbody = table.querySelector('tbody');
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-  const colIdx = Array.from(th.parentNode.children).indexOf(th);
-  const dir = th.classList.contains('sorted') && th.dataset.dir === 'asc' ? -1 : 1;
-
-  // Clear previous sort markers
-  th.parentNode.querySelectorAll('th').forEach(t => { t.classList.remove('sorted'); t.dataset.dir = ''; t.querySelector('.sort-arrow').textContent = ''; });
-  th.classList.add('sorted');
-  th.dataset.dir = dir === 1 ? 'asc' : 'desc';
-  th.querySelector('.sort-arrow').textContent = dir === 1 ? '▲' : '▼';
-
-  rows.sort((a, b) => {
-    const av = a.children[colIdx].textContent.trim().toLowerCase();
-    const bv = b.children[colIdx].textContent.trim().toLowerCase();
-    // Try numeric compare first
-    const an = parseFloat(av), bn = parseFloat(bv);
-    if (!isNaN(an) && !isNaN(bn)) return (an - bn) * dir;
-    return av.localeCompare(bv) * dir;
+function copyListSingle(btn, text) {
+  navigator.clipboard.writeText(text).then(() => {
+    const originalText = btn.innerText;
+    btn.innerText = "Copied!";
+    btn.style.color = "var(--accent)";
+    setTimeout(() => {
+      btn.innerText = originalText;
+      btn.style.color = "";
+    }, 2000);
   });
-  rows.forEach(r => tbody.appendChild(r));
 }
-
-// ─── URLs / JS tables (lazy render — too big for inline HTML) ────
-function renderUrlsTable() {
-  const tbody = document.getElementById('urls-tbody');
-  const urls = SCAN_DATA.urls;
-  let visible = 0;
-  tbody.innerHTML = urls.map(u => {
-    const match = !searchQuery || u.toLowerCase().includes(searchQuery);
-    if (match) visible++;
-    return '<tr style="display:' + (match ? '' : 'none') + '"><td class="mono truncate"><a href="' + u + '" target="_blank">' + u + '</a></td></tr>';
-  }).join('');
-  document.getElementById('urls-count').textContent = visible;
-}
-
-function renderJsTable() {
-  const tbody = document.getElementById('js-tbody');
-  const js = SCAN_DATA.jsFiles;
-  let visible = 0;
-  tbody.innerHTML = js.map(u => {
-    const match = !searchQuery || u.toLowerCase().includes(searchQuery);
-    if (match) visible++;
-    return '<tr style="display:' + (match ? '' : 'none') + '"><td class="mono truncate"><a href="' + u + '" target="_blank">' + u + '</a></td></tr>';
-  }).join('');
-  document.getElementById('js-count').textContent = visible;
-}
-
-// ─── Charts ──────────────────────────────────────────────────────
-function renderCharts() {
-  renderSeverityDonut();
-}
-function renderSeverityDonut() {
-  const svg = document.getElementById('severity-donut');
-  if (!svg) return;
-  const data = [
-    { label: 'Critical', value: {{.CriticalCount}}, color: '#ff3d5a' },
-    { label: 'High', value: {{.HighCount}}, color: '#ff6b35' },
-    { label: 'Medium', value: {{.MediumCount}}, color: '#ffd93d' },
-    { label: 'Low', value: {{.LowCount}}, color: '#6bcb77' }
-  ];
-  const total = data.reduce((s, d) => s + d.value, 0);
-  if (total === 0) {
-    svg.innerHTML = '<text x="18" y="20" text-anchor="middle" fill="#64748b" font-size="3">No findings</text>';
-    return;
-  }
-  let offset = 0;
-  const r = 15.9155;  // circumference / 2π for r=16
-  let html = '<circle cx="18" cy="18" r="15.9155" fill="none" stroke="#1c2229" stroke-width="3"/>';
-  data.forEach(d => {
-    if (d.value === 0) return;
-    const pct = (d.value / total) * 100;
-    html += '<circle cx="18" cy="18" r="15.9155" fill="none" stroke="' + d.color + '" stroke-width="3" stroke-dasharray="' + pct + ' ' + (100 - pct) + '" stroke-dashoffset="' + (25 - offset) + '" transform="rotate(-90 18 18)"/>';
-    offset += pct;
-  });
-  html += '<text x="18" y="19" text-anchor="middle" fill="#fff" font-size="6" font-weight="700" font-family="JetBrains Mono">' + total + '</text>';
-  svg.innerHTML = html;
-}
-
-// ─── CSV export ──────────────────────────────────────────────────
-function exportCSV() {
-  const tab = currentTab;
-  let rows = [];
-  let filename = 'reconx-' + tab + '.csv';
-
-  if (tab === 'findings') {
-    rows.push(['Severity', 'Name', 'Target', 'Template', 'Time']);
-    document.querySelectorAll('#findings-table tbody tr').forEach(tr => {
-      if (tr.style.display === 'none') return;
-      const cells = tr.querySelectorAll('td');
-      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim(), cells[3].textContent.trim(), cells[4].textContent.trim()]);
-    });
-  } else if (tab === 'hosts') {
-    rows.push(['Domain', 'Status', 'Title', 'Server', 'Tech', 'IP', 'Tags']);
-    document.querySelectorAll('#hosts-table tbody tr').forEach(tr => {
-      if (tr.style.display === 'none') return;
-      const cells = tr.querySelectorAll('td');
-      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim(), cells[3].textContent.trim(), cells[4].textContent.trim(), cells[5].textContent.trim(), cells[6].textContent.trim()]);
-    });
-  } else if (tab === 'subdomains') {
-    rows.push(['Subdomain', 'Source', 'Live']);
-    document.querySelectorAll('#subdomains-table tbody tr').forEach(tr => {
-      if (tr.style.display === 'none') return;
-      const cells = tr.querySelectorAll('td');
-      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim()]);
-    });
-  } else if (tab === 'ports') {
-    rows.push(['Host', 'Port', 'Protocol', 'Service']);
-    document.querySelectorAll('#ports-table tbody tr').forEach(tr => {
-      if (tr.style.display === 'none') return;
-      const cells = tr.querySelectorAll('td');
-      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim(), cells[3].textContent.trim()]);
-    });
-  } else if (tab === 'secrets') {
-    rows.push(['Type', 'Source', 'Value']);
-    document.querySelectorAll('#secrets-table tbody tr').forEach(tr => {
-      if (tr.style.display === 'none') return;
-      const cells = tr.querySelectorAll('td');
-      rows.push([cells[0].textContent.trim(), cells[1].textContent.trim(), cells[2].textContent.trim()]);
-    });
-  } else if (tab === 'urls') {
-    rows.push(['URL']);
-    SCAN_DATA.urls.forEach(u => {
-      if (!searchQuery || u.toLowerCase().includes(searchQuery)) rows.push([u]);
-    });
-  } else if (tab === 'js') {
-    rows.push(['JS URL']);
-    SCAN_DATA.jsFiles.forEach(u => {
-      if (!searchQuery || u.toLowerCase().includes(searchQuery)) rows.push([u]);
-    });
-  } else {
-    alert('No CSV export for this tab');
-    return;
-  }
-
-  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = filename;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-// ─── Init ────────────────────────────────────────────────────────
-renderFilters();
-applyFilters();
 </script>
 </body>
 </html>

@@ -92,24 +92,32 @@ func (m *Module) extractKeywords() []string {
 }
 
 func (m *Module) runS3Scanner(ctx context.Context, keywords []string, outDir string) int {
-	outFile := filepath.Join(outDir, "s3scanner_results.txt")
-	args := []string{"scan", "--buckets-file", "-", "-o", outFile}
-	input := strings.Join(keywords, "\n")
+	// s3scanner scan does NOT support -o for output — it writes to stdout only.
+	// Write keywords to a temp file and pass with -f flag.
+	bucketsFile := filepath.Join(outDir, "s3scanner_input.txt")
+	if err := os.WriteFile(bucketsFile, []byte(strings.Join(keywords, "\n")+"\n"), 0644); err != nil {
+		m.log.Warn("s3scanner: could not write input file: %v", err)
+		return 0
+	}
+	defer os.Remove(bucketsFile)
+
+	args := []string{"scan", "-f", bucketsFile}
 
 	m.log.Tool("s3scanner", fmt.Sprintf("Scanning %d keywords for public S3 buckets", len(keywords)))
+	m.log.ToolCmd("s3scanner", args, "")
 	start := time.Now()
 	count := 0
 
 	r := runner.Run(ctx, "s3scanner", args,
-runner.WithStdin(input),
-runner.WithTimeout(10*time.Minute),
-runner.WithLineCallback(func(line string) {
-line = strings.TrimSpace(line)
-if strings.Contains(strings.ToLower(line), "found") ||
-strings.Contains(strings.ToLower(line), "open") ||
-strings.Contains(strings.ToLower(line), "public") {
-count++
-m.store.AddCloudAsset(&store.CloudAsset{
+		runner.WithTimeout(10*time.Minute),
+		runner.WithLineCallback(func(line string) {
+			line = strings.TrimSpace(line)
+			ll := strings.ToLower(line)
+			if strings.Contains(ll, "found") ||
+				strings.Contains(ll, "open") ||
+				strings.Contains(ll, "public") {
+				count++
+				m.store.AddCloudAsset(&store.CloudAsset{
 					Provider:   "aws",
 					Name:       line,
 					URL:        fmt.Sprintf("https://%s.s3.amazonaws.com", line),

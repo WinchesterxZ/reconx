@@ -87,6 +87,10 @@ func (m *Module) Run(ctx context.Context) error {
 	// Any new SANs discovered here are added back to the subdomain store.
 	m.runTLSX(ctx)
 
+	// ── Subdomain Takeover Check (subjack) ──────────────────────────────────
+	// Checks all discovered subdomains for dangling CNAMEs (AWS S3, GitHub Pages, Heroku, etc.)
+	m.runSubjack(ctx)
+
 	return err
 }
 
@@ -512,10 +516,11 @@ func (m *Module) runTLSX(ctx context.Context) {
                 return
         }
 
-        outFile := m.outDir + "/tls_info.txt"
-        args := []string{"-l", aliveFile, "-san", "-cn", "-silent", "-o", outFile}
-        // Merge any extra flags from config
-        args = append(args, tcfg.Flags...)
+        // tlsx writes output to stdout when no -o flag is given.
+        // Previously -o was passed, causing stdout to be empty and LineCallback to receive nothing.
+        // Args: note -san and -cn extract the SAN/CN fields; -silent suppresses banners.
+        args := []string{"-l", aliveFile, "-san", "-cn", "-silent"}
+        // Do NOT append tcfg.Flags here — defaults include -san/-cn/-silent which would duplicate them.
 
         timeout := time.Duration(tcfg.Timeout) * time.Second
         if timeout == 0 {
@@ -534,19 +539,31 @@ func (m *Module) runTLSX(ctx context.Context) {
                         if line == "" || strings.HasPrefix(line, "#") {
                                 return
                         }
-                        // tlsx output lines are bare domains (one per line)
-                        line = strings.ToLower(strings.TrimPrefix(line, "*."))
-                        if !strings.Contains(line, ".") {
-                                return
+                        // tlsx output format: "host:port [san1 san2 ...]"
+                        // Extract the bracketed SANs when present, otherwise treat whole line as domain
+                        var candidates []string
+                        if idx := strings.Index(line, "["); idx >= 0 {
+                                inner := line[idx+1:]
+                                if end := strings.Index(inner, "]"); end >= 0 {
+                                        inner = inner[:end]
+                                }
+                                candidates = strings.Fields(inner)
+                        } else {
+                                candidates = []string{line}
                         }
-                        // Only add if it's plausibly a subdomain of a target domain
-                        for _, d := range m.cfg.Target.Domains {
-                                if strings.HasSuffix(line, "."+d) || line == d {
-                                        if m.store.AddSubdomainFromSource(line, "tlsx") {
-                                                newSubs++
-                                                m.log.Debug("tlsx: new SAN subdomain: %s", line)
+                        for _, d := range candidates {
+                                d = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(d), "*."))
+                                if !strings.Contains(d, ".") {
+                                        continue
+                                }
+                                for _, td := range m.cfg.Target.Domains {
+                                        if strings.HasSuffix(d, "."+td) || d == td {
+                                                if m.store.AddSubdomainFromSource(d, "tlsx") {
+                                                        newSubs++
+                                                        m.log.Debug("tlsx: new SAN subdomain: %s", d)
+                                                }
+                                                break
                                         }
-                                        break
                                 }
                         }
                 }),
@@ -562,4 +579,49 @@ func (m *Module) runTLSX(ctx context.Context) {
                         m.log.Info("tlsx: %d new subdomains from TLS SANs added to scope", newSubs)
                 }
         }
+}
+
+// runSubjack scans all subdomains for takeover vulnerabilities (dangling DNS records)
+func (m *Module) runSubjack(ctx context.Context) {
+	if !runner.IsAvailable("subjack") {
+		m.log.Debug("subjack not found — skipping subdomain takeover scan")
+		return
+	}
+	subsFile := m.outDir + "/subdomains.txt"
+	if _, err := os.Stat(subsFile); os.IsNotExist(err) {
+		return
+	}
+	outFile := m.outDir + "/takeovers.txt"
+	args := []string{"-w", subsFile, "-t", "50", "-timeout", "10", "-o", outFile, "-ssl"}
+	m.log.Tool("subjack", "checking for subdomain takeovers (dangling CNAMEs)")
+	m.log.ToolCmd("subjack", args, "")
+	start := time.Now()
+
+	takeoverCount := 0
+	r := runner.Run(ctx, "subjack", args,
+		runner.WithTimeout(5*time.Minute),
+		runner.WithLineCallback(func(line string) {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				return
+			}
+			takeoverCount++
+			m.log.Finding("critical", "Subdomain Takeover: "+line, "subjack")
+			m.store.AddFinding(&store.Finding{
+				Name:     "Subdomain Takeover (" + line + ")",
+				Severity: "critical",
+				Target:   line,
+				Template: "subjack",
+			})
+		}),
+	)
+
+	if r.Err != nil && takeoverCount == 0 && !util.FileExists(outFile) {
+		m.log.Debug("subjack: %s", r.DiagString())
+	} else {
+		m.log.ToolDone("subjack", takeoverCount, time.Since(start))
+		if takeoverCount > 0 {
+			m.log.Warn("🚨 subjack found %d POTENTIAL SUBDOMAIN TAKEOVERS!", takeoverCount)
+		}
+	}
 }

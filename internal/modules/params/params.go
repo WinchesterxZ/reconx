@@ -1,21 +1,22 @@
 package params
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-	"time"
+"context"
+"encoding/json"
+"fmt"
+"os"
+"path/filepath"
+"strings"
+"sync"
+"time"
 
-	"github.com/reconx/reconx/internal/config"
-	"github.com/reconx/reconx/internal/store"
-	"github.com/reconx/reconx/pkg/logger"
-	"github.com/reconx/reconx/pkg/runner"
+"github.com/reconx/reconx/internal/config"
+"github.com/reconx/reconx/internal/store"
+"github.com/reconx/reconx/pkg/logger"
+"github.com/reconx/reconx/pkg/runner"
 )
 
-// Module discovers hidden GET/POST/JSON parameters using arjun.
+// Module discovers hidden GET/POST/JSON parameters using multiple tools.
 type Module struct {
 	cfg    *config.Config
 	store  *store.Store
@@ -28,42 +29,22 @@ func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string)
 	return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
 }
 
-// Run scans live URLs for hidden parameters.
+// Run scans live URLs for hidden parameters using arjun + dalfox in parallel.
 func (m *Module) Run(ctx context.Context) error {
-	m.log.Phase("Hidden Parameter Discovery", "Arjun — identifying hidden GET/POST parameters")
+	m.log.Phase("Hidden Parameter Discovery",
+"arjun (GET/POST/JSON brute), dalfox (param analysis), getJS (JS param extraction)")
 
-	tcfg := m.cfg.Tools["arjun"]
-	path := "arjun"
-	if tcfg.Path != "" {
-		path = tcfg.Path
-	}
-
-	if !runner.IsAvailable(path) {
-		m.log.ToolSkipped("arjun", "not found — install: pip3 install arjun")
-		return nil
-	}
-
-	urls := m.store.GetURLs()
-	if len(urls) == 0 {
-		hosts := m.store.GetHosts()
-		for _, h := range hosts {
-			if u, ok := h.Meta["url"]; ok {
-				urls = append(urls, u)
-			} else {
-				urls = append(urls, "https://"+h.Domain)
-			}
-		}
-	}
-
-	if len(urls) == 0 {
-		m.log.Warn("No URLs or live hosts to test for parameters")
-		return nil
-	}
-
-	targetURLs := sampleEndpoints(urls, 50)
 	paramsDir := filepath.Join(m.outDir, "params")
 	if err := os.MkdirAll(paramsDir, 0755); err != nil {
 		m.log.Warn("Could not create params/ directory: %v", err)
+	}
+
+	// Build smart target list: prioritize URLs with existing params, then API endpoints
+	targetURLs := m.buildTargetList(500)
+
+	if len(targetURLs) == 0 {
+		m.log.Warn("No URLs or live hosts to test for parameters")
+		return nil
 	}
 
 	targetsFile := filepath.Join(paramsDir, "targets.txt")
@@ -72,13 +53,85 @@ func (m *Module) Run(ctx context.Context) error {
 		return err
 	}
 
+	m.log.Info("Parameter discovery: %d target endpoints selected", len(targetURLs))
+
+	start := time.Now()
+	total := 0
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Tool 1: arjun
+	if runner.IsAvailable("arjun") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n := m.runArjun(ctx, targetsFile, paramsDir)
+			mu.Lock()
+			total += n
+			mu.Unlock()
+		}()
+	} else {
+		m.log.ToolSkipped("arjun", "not found — install: pip3 install arjun")
+	}
+
+	// Tool 2: dalfox --only-discovery
+	if runner.IsAvailable("dalfox") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n := m.runDalfox(ctx, targetURLs, paramsDir)
+			mu.Lock()
+			total += n
+			mu.Unlock()
+		}()
+	} else {
+		m.log.ToolSkipped("dalfox", "not found — install: go install github.com/hahwul/dalfox/v2@latest")
+	}
+
+	// Tool 3: getJS — extract endpoints from JS files
+	if runner.IsAvailable("getJS") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			n := m.runGetJS(ctx, paramsDir)
+			mu.Lock()
+			total += n
+			mu.Unlock()
+		}()
+	} else {
+		m.log.ToolSkipped("getJS", "not found — install: go install github.com/003random/getJS@latest")
+	}
+
+	wg.Wait()
+
+	m.log.PhaseComplete("Hidden Parameter Discovery", total, time.Since(start))
+	return nil
+}
+
+// runArjun runs arjun against a file of target URLs.
+func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir string) int {
+	tcfg := m.cfg.Tools["arjun"]
+	path := "arjun"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
+
 	outFile := filepath.Join(paramsDir, "arjun_results.json")
+
 	args := []string{
 		"-i", targetsFile,
 		"-oJ", outFile,
-		"-t", "20",
+		"-t", "5",
 		"--stable",
+		"--passive", // check wayback/commoncrawl for known params (no extra HTTP requests)
 	}
+
+	// Inject bug bounty header
+	if m.cfg.BugBountyHeader != "" {
+		args = append(args, "--headers", m.cfg.BugBountyHeader)
+	}
+
+	// Extra user flags (no-dup guard)
 	seen := make(map[string]bool)
 	for _, a := range args {
 		seen[a] = true
@@ -95,105 +148,319 @@ func (m *Module) Run(ctx context.Context) error {
 		timeout = 30 * time.Minute
 	}
 
-	m.log.Tool("arjun", fmt.Sprintf("%d endpoints → %s", len(targetURLs), outFile))
+	m.log.Tool("arjun", fmt.Sprintf("%d endpoints → %s", countLines(targetsFile), outFile))
 	m.log.ToolCmd("arjun", args, "")
 	start := time.Now()
 
 	board := m.log.NewProgressBoard()
-	board.Register("arjun", fmt.Sprintf("%d endpoints", len(targetURLs)))
+	board.Register("arjun", fmt.Sprintf("%d endpoints", countLines(targetsFile)))
 
-	onLine := func(line string) {
-		board.Heartbeat("arjun")
-	}
-
-	// Arjun has a known bug where its Python thread pool hangs on exit.
-	// Since it only writes the JSON file at the very end of its scan,
-	// we can monitor the file and aggressively kill Arjun once it's valid.
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	go func() {
-		for {
-			select {
-			case <-runCtx.Done():
-				return
-			case <-time.After(3 * time.Second):
-				if data, err := os.ReadFile(outFile); err == nil && len(data) > 2 {
-					var test map[string]interface{}
-					if json.Unmarshal(data, &test) == nil {
-						cancel() // JSON is valid! Kill Arjun immediately.
-						return
-					}
-				}
-			}
-		}
-	}()
-
-	r := runner.Run(runCtx, path, args, 
-		runner.WithTimeout(timeout),
-		runner.WithLineCallback(onLine),
-		runner.WithStderrCallback(onLine),
-	)
-	
-	if r.Err != nil && !runner.IsAvailable(path) {
-		board.Fail("arjun", r.DiagString())
-		board.Stop()
-		m.log.ToolError("arjun", fmt.Errorf(r.DiagString()), r.Stderr)
-		return nil
-	}
+	// NOTE: No file-watcher goroutine — arjun only writes JSON at the very end,
+	// cancelling the context before it finishes writing corrupts the output file.
+	r := runner.Run(ctx, path, args,
+runner.WithTimeout(timeout),
+runner.WithLineCallback(func(line string) { board.Heartbeat("arjun") }),
+runner.WithStderrCallback(func(line string) {
+m.log.Debug("arjun: %s", line)
+board.Heartbeat("arjun")
+}),
+)
 
 	totalParams := 0
-	if data, err := os.ReadFile(outFile); err == nil {
-		var advancedMap map[string]struct {
-			Method string   `json:"method"`
-			Params []string `json:"params"`
-		}
-		if err := json.Unmarshal(data, &advancedMap); err == nil {
-			for u, pData := range advancedMap {
-				if len(pData.Params) > 0 {
-					m.store.AddParamFinding(&store.ParamFinding{
-						URL:    u,
-						Method: pData.Method,
-						Params: pData.Params,
-						Tool:   "arjun",
-					})
-					totalParams += len(pData.Params)
-					m.log.Info("  [Param] %s -> %s", u, strings.Join(pData.Params, ", "))
-				}
-			}
-		} else {
-			m.log.Warn("Failed to parse arjun results: %v", err)
-		}
+	if data, err := os.ReadFile(outFile); err == nil && len(data) > 2 {
+		totalParams = m.parseArjunResults(data)
+	} else if r.Err != nil {
+		m.log.ToolError("arjun", fmt.Errorf(r.DiagString()), r.Stderr)
 	}
 
 	board.Done("arjun", totalParams)
 	board.Stop()
 	m.log.ToolDone("arjun", totalParams, time.Since(start))
-	m.log.PhaseComplete("Hidden Parameter Discovery", totalParams, time.Since(start))
-	return nil
+	return totalParams
 }
 
-func sampleEndpoints(urls []string, max int) []string {
+// parseArjunResults handles multiple arjun JSON output formats.
+// Format A (current): {"https://url": {"params": ["p1","p2"], "method":"GET"}}
+// Format B (older):   {"https://url": {"params": {"GET": ["p1","p2"]}}}
+func (m *Module) parseArjunResults(data []byte) int {
+	total := 0
+
+	// Format A
+	var formatA map[string]struct {
+		Params []string `json:"params"`
+		Method string   `json:"method"`
+	}
+	if err := json.Unmarshal(data, &formatA); err == nil {
+		for u, pData := range formatA {
+			if len(pData.Params) == 0 {
+				continue
+			}
+			method := pData.Method
+			if method == "" {
+				method = "GET"
+			}
+			m.store.AddParamFinding(&store.ParamFinding{
+				URL:    u,
+				Method: method,
+				Params: pData.Params,
+				Tool:   "arjun",
+			})
+			total += len(pData.Params)
+			m.log.Info("  [Param/arjun] %s → %s (%s)", u, strings.Join(pData.Params, ", "), method)
+		}
+		if total > 0 {
+			return total
+		}
+	}
+
+	// Format B — nested by method
+	var formatB map[string]struct {
+		Params map[string][]string `json:"params"`
+	}
+	if err := json.Unmarshal(data, &formatB); err == nil {
+		for u, pData := range formatB {
+			for method, params := range pData.Params {
+				if len(params) == 0 {
+					continue
+				}
+				m.store.AddParamFinding(&store.ParamFinding{
+					URL:    u,
+					Method: method,
+					Params: params,
+					Tool:   "arjun",
+				})
+				total += len(params)
+				m.log.Info("  [Param/arjun] %s → %s (%s)", u, strings.Join(params, ", "), method)
+			}
+		}
+	}
+
+	if total == 0 {
+		m.log.Warn("arjun: could not parse results — raw output saved in params/arjun_results.json")
+	}
+	return total
+}
+
+// runDalfox runs dalfox in --only-discovery mode (param analysis, no XSS payloads).
+func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string) int {
+	outFile := filepath.Join(paramsDir, "dalfox_params.txt")
+
+	args := []string{
+		"pipe",
+		"--only-discovery",
+		"--no-color",
+		"--format", "json",
+		"-o", outFile,
+	}
+	if m.cfg.BugBountyHeader != "" {
+		args = append(args, "-H", m.cfg.BugBountyHeader)
+	}
+
+	input := strings.Join(urls, "\n")
+	timeout := 15 * time.Minute
+
+	m.log.Tool("dalfox", fmt.Sprintf("%d URLs — param analysis only", len(urls)))
+	m.log.ToolCmd("dalfox", args, fmt.Sprintf("[%d URLs via stdin]", len(urls)))
+	start := time.Now()
+
+	count := 0
+	r := runner.Run(ctx, "dalfox", args,
+runner.WithStdin(input),
+runner.WithTimeout(timeout),
+runner.WithStderrCallback(func(line string) { m.log.Debug("dalfox: %s", line) }),
+runner.WithLineCallback(func(line string) {
+line = strings.TrimSpace(line)
+if line == "" || !strings.HasPrefix(line, "{") {
+return
+}
+// dalfox JSON: {"type":"POC","method":"GET","param":"name","url":"..."}
+paramName := jsonStr(line, "param")
+targetURL := jsonStr(line, "url")
+method := jsonStr(line, "method")
+if paramName == "" || targetURL == "" {
+return
+}
+m.store.AddParamFinding(&store.ParamFinding{
+				URL:    targetURL,
+				Method: method,
+				Params: []string{paramName},
+				Tool:   "dalfox",
+			})
+			count++
+			m.log.Info("  [Param/dalfox] %s → %s (%s)", targetURL, paramName, method)
+		}),
+	)
+
+	if r.IsTimeout() {
+		m.log.ToolTimeout("dalfox", count, timeout)
+	} else if r.Err != nil && count == 0 {
+		m.log.ToolError("dalfox", fmt.Errorf(r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("dalfox", count, time.Since(start))
+	}
+	return count
+}
+
+// runGetJS extracts hidden endpoint URLs from JS files.
+func (m *Module) runGetJS(ctx context.Context, paramsDir string) int {
+	jsFiles := m.store.GetJSFiles()
+	if len(jsFiles) == 0 {
+		m.log.Debug("getJS: no JS files in store, skipping")
+		return 0
+	}
+
+	tmpFile, err := os.CreateTemp("", "getjs-input-*.txt")
+	if err != nil {
+		m.log.Warn("getJS: could not create temp file: %v", err)
+		return 0
+	}
+	defer os.Remove(tmpFile.Name())
+	if _, err := tmpFile.WriteString(strings.Join(jsFiles, "\n")); err != nil {
+		tmpFile.Close()
+		return 0
+	}
+	tmpFile.Close()
+
+	outFile := filepath.Join(paramsDir, "getjs_endpoints.txt")
+	args := []string{"--input", tmpFile.Name(), "--output", outFile, "--complete", "--resolve"}
+	if m.cfg.BugBountyHeader != "" {
+		args = append(args, "-H", m.cfg.BugBountyHeader)
+	}
+
+	m.log.Tool("getJS", fmt.Sprintf("%d JS files — extracting endpoint URLs", len(jsFiles)))
+	m.log.ToolCmd("getJS", args, "")
+	start := time.Now()
+
+	r := runner.Run(ctx, "getJS", args,
+runner.WithTimeout(10*time.Minute),
+runner.WithStderrCallback(func(line string) { m.log.Debug("getJS: %s", line) }),
+)
+
+	count := 0
+	for _, line := range r.Lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "http") {
+			m.store.AddURL(line)
+			count++
+		}
+	}
+
+	if r.Err != nil && count == 0 {
+		m.log.ToolError("getJS", fmt.Errorf(r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("getJS", count, time.Since(start))
+		if count > 0 {
+			m.log.Info("getJS: %d new endpoints discovered from JS files", count)
+		}
+	}
+	return count
+}
+
+// buildTargetList selects the best endpoints for param discovery with smart prioritization.
+// Priority order: 1) URLs with existing params (already have =), 2) API paths,
+// 3) auth/search pages, 4) everything else. Capped at maxURLs.
+func (m *Module) buildTargetList(maxURLs int) []string {
+	allURLs := m.store.GetURLs()
+
+	// Fall back to live hosts if no URLs discovered
+	if len(allURLs) == 0 {
+		var fallback []string
+		for _, h := range m.store.GetHosts() {
+			if u, ok := h.Meta["url"]; ok {
+				fallback = append(fallback, u)
+			} else {
+				fallback = append(fallback, "https://"+h.Domain)
+			}
+		}
+		return fallback
+	}
+
+	skipExt := []string{
+		".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+		".css", ".woff", ".woff2", ".ttf", ".eot", ".mp4", ".mp3", ".pdf",
+		".zip", ".tar", ".gz", ".map",
+	}
+
+	var withParams, apiPaths, loginPaths, other []string
 	seen := make(map[string]bool)
-	var sampled []string
-	for _, u := range urls {
+
+	for _, u := range allURLs {
 		lower := strings.ToLower(u)
-		if strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") ||
-			strings.HasSuffix(lower, ".css") || strings.HasSuffix(lower, ".woff") ||
-			strings.HasSuffix(lower, ".svg") || strings.HasSuffix(lower, ".ico") {
+		skip := false
+		for _, ext := range skipExt {
+			if strings.HasSuffix(lower, ext) {
+				skip = true
+				break
+			}
+		}
+		if skip {
 			continue
 		}
+
+		// Deduplicate by base path (ignore query string)
 		base := u
 		if idx := strings.Index(base, "?"); idx != -1 {
 			base = base[:idx]
 		}
-		if !seen[base] {
-			seen[base] = true
-			sampled = append(sampled, u)
-			if len(sampled) >= max {
-				break
+		if seen[base] {
+			continue
+		}
+		seen[base] = true
+
+		switch {
+		case strings.Contains(u, "="):
+			withParams = append(withParams, u)
+		case matchAny(lower, "/api/", "/v1/", "/v2/", "/v3/", "/rest/", "/graphql", ".json", ".xml"):
+			apiPaths = append(apiPaths, u)
+		case matchAny(lower, "login", "signin", "auth", "register", "account", "reset", "forgot", "search", "query", "filter"):
+			loginPaths = append(loginPaths, u)
+		default:
+			other = append(other, u)
+		}
+	}
+
+	var result []string
+	for _, bucket := range [][]string{withParams, apiPaths, loginPaths, other} {
+		for _, u := range bucket {
+			result = append(result, u)
+			if len(result) >= maxURLs {
+				return result
 			}
 		}
 	}
-	return sampled
+	return result
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func matchAny(s string, patterns ...string) bool {
+	for _, p := range patterns {
+		if strings.Contains(s, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func countLines(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	return strings.Count(string(data), "\n") + 1
+}
+
+// jsonStr extracts a string value from a flat JSON line without a full JSON parser.
+func jsonStr(line, key string) string {
+	needle := `"` + key + `":"`
+	idx := strings.Index(line, needle)
+	if idx < 0 {
+		return ""
+	}
+	rest := line[idx+len(needle):]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }

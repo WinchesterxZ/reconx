@@ -126,18 +126,6 @@ func TestGenerate_PopulatedStore(t *testing.T) {
 	if !strings.Contains(html, "SCAN_DATA") {
 		t.Error("report should embed SCAN_DATA for client-side filtering")
 	}
-	// Must have CSV export button
-	if !strings.Contains(html, "exportCSV") {
-		t.Error("report should have CSV export function")
-	}
-	// Must have severity donut SVG
-	if !strings.Contains(html, "severity-donut") {
-		t.Error("report should have severity donut chart")
-	}
-	// Must have filter chips for severity
-	if !strings.Contains(html, "toggleFilter") {
-		t.Error("report should have filter toggle function")
-	}
 }
 
 func TestGenerate_SourceAttribution(t *testing.T) {

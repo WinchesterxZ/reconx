@@ -83,7 +83,7 @@ func (m *Module) Run(ctx context.Context) error {
         totalFindings := 0
         baseArgs := []string{
                 "-l", targetFile,
-                "-j",
+                "-jsonl",    // nuclei v3 uses -jsonl (previously -j which is deprecated)
                 "-silent",
                 "-no-color",
                 "-retries", "2",
@@ -181,7 +181,7 @@ func (m *Module) logFindingSummary() {
                 counts[strings.ToLower(f.Severity)]++
         }
         parts := []string{}
-        for _, sev := range []string{"critical", "high", "medium", "low"} {
+        for _, sev := range []string{"critical", "high", "medium", "low", "info"} {
                 if n := counts[sev]; n > 0 {
                         parts = append(parts, fmt.Sprintf("%s:%d", strings.ToUpper(sev), n))
                 }
@@ -212,10 +212,8 @@ func parseNucleiLine(line string) *store.Finding {
         if severity == "" {
                 severity = "info"
         }
-        // Skip pure info findings to reduce noise
-        if severity == "info" {
-                return nil
-        }
+        // Note: we no longer skip info-severity findings.
+        // Tech-detect template results are info level but important for the report.
 
         target := util.JsonStr(line, "matched-at")
         if target == "" {

@@ -5,6 +5,7 @@ import (
         "fmt"
         "io"
         "net/http"
+        "os"
         "strings"
         "sync"
         "time"
@@ -382,10 +383,27 @@ func (m *Module) runHakrawler(ctx context.Context, input string) []string {
 
 func (m *Module) runGospider(ctx context.Context, input string) []string {
         start := time.Now()
+
+        // gospider does NOT support '-S -' for stdin — it requires a real file.
+        // Write URLs to a temp file and pass the path.
+        tmpFile, err := os.CreateTemp("", "gospider-urls-*.txt")
+        if err != nil {
+                m.log.Warn("gospider: could not create temp file: %v", err)
+                return nil
+        }
+        defer os.Remove(tmpFile.Name())
+        if _, err := tmpFile.WriteString(input); err != nil {
+                tmpFile.Close()
+                m.log.Warn("gospider: could not write temp file: %v", err)
+                return nil
+        }
+        tmpFile.Close()
+
         count := strings.Count(input, "\n") + 1
-        args := []string{"-S", "-", "-t", "10", "-d", "3", "--sitemap", "--robots"}
+        // -t = parallel sites, -c = concurrent requests per site, -d = depth
+        args := []string{"-S", tmpFile.Name(), "-c", "10", "-d", "3", "--sitemap", "--robots"}
         m.log.Tool("gospider", fmt.Sprintf("%d hosts", count))
-        m.log.ToolCmd("gospider", args, fmt.Sprintf("[%d hosts via stdin]", count))
+        m.log.ToolCmd("gospider", args, "")
 
         tcfg := m.cfg.Tools["gospider"]
         timeout := time.Duration(tcfg.Timeout) * time.Second
@@ -394,7 +412,6 @@ func (m *Module) runGospider(ctx context.Context, input string) []string {
         }
 
         r := runner.Run(ctx, "gospider", args,
-                runner.WithStdin(input),
                 runner.WithTimeout(timeout),
                 runner.WithStderrCallback(func(line string) { m.log.Debug("gospider: %s", line) }))
 

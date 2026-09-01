@@ -242,6 +242,26 @@ func DefaultConfig() *Config {
                                 Flags:   []string{"--stable"},
                                 Timeout: 1800,
                         },
+                        "dalfox": {
+                                Enabled: true, Path: "dalfox",
+                                Timeout: 900,
+                        },
+                        "getJS": {
+                                Enabled: true, Path: "getJS",
+                                Timeout: 600,
+                        },
+
+                        // ── Subdomain takeover ──────────────────────────────────────────
+                        "subjack": {
+                                Enabled: true, Path: "subjack",
+                                Timeout: 300,
+                        },
+
+                        // ── Secrets ─────────────────────────────────────────────────────
+                        "gitleaks": {
+                                Enabled: true, Path: "gitleaks",
+                                Timeout: 600,
+                        },
 
                         // ── Cloud / bucket enum ────────────────────────────────────────
                         "s3scanner": {

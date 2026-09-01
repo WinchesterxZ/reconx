@@ -1,62 +1,66 @@
 package js
 
 import (
-        "context"
-        "fmt"
-        "strings"
-        "sync"
-        "time"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
-        "github.com/reconx/reconx/internal/config"
-        "github.com/reconx/reconx/internal/store"
-        "github.com/reconx/reconx/pkg/logger"
-        "github.com/reconx/reconx/pkg/runner"
-        "github.com/reconx/reconx/pkg/util"
+	"github.com/reconx/reconx/internal/config"
+	"github.com/reconx/reconx/internal/store"
+	"github.com/reconx/reconx/pkg/logger"
+	"github.com/reconx/reconx/pkg/runner"
+	"github.com/reconx/reconx/pkg/util"
 )
 
 type Module struct {
-        cfg    *config.Config
-        store  *store.Store
-        log    *logger.Logger
-        outDir string
+	cfg    *config.Config
+	store  *store.Store
+	log    *logger.Logger
+	outDir string
 }
 
 func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string) *Module {
-        return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
+	return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
 }
 
 func (m *Module) Run(ctx context.Context) error {
-        m.log.Phase("JS & Secret Analysis",
-                "Scanning JS files for secrets, API keys, tokens, and hidden endpoints")
+	m.log.Phase("JS & Secret Analysis",
+		"Scanning JS files for secrets, API keys, tokens, and hidden endpoints")
 
-        start := time.Now()
-        jsFiles := m.store.GetJSFiles()
+	start := time.Now()
+	jsFiles := m.store.GetJSFiles()
 
-        if len(jsFiles) == 0 {
-                m.log.Warn("No JS files discovered — check that URL discovery ran and found JS files")
-                m.log.Warn("Tip: ensure waybackurls/katana/hakrawler are installed and live hosts exist")
-                return nil
-        }
+	if len(jsFiles) == 0 {
+		m.log.Warn("No JS files discovered — check that URL discovery ran and found JS files")
+		m.log.Warn("Tip: ensure waybackurls/katana/hakrawler are installed and live hosts exist")
+		return nil
+	}
 
-        m.log.Info("Analyzing %d JavaScript files", len(jsFiles))
-        if err := store.SaveRaw(m.outDir+"/js_files.txt", jsFiles); err != nil {
-                m.log.Warn("Could not save js_files.txt: %v", err)
-        }
+	m.log.Info("Analyzing %d JavaScript files", len(jsFiles))
+	if err := store.SaveRaw(m.outDir+"/js_files.txt", jsFiles); err != nil {
+		m.log.Warn("Could not save js_files.txt: %v", err)
+	}
 
-        input := strings.Join(jsFiles, "\n")
+	input := strings.Join(jsFiles, "\n")
 
-        type jsTool struct {
-                name   string
-                binKey string
-                fn     func(context.Context, string)
-        }
+	type jsTool struct {
+		name   string
+		binKey string
+		fn     func(context.Context, string)
+	}
 
-        tools := []jsTool{
-                {"subjs",      "subjs",      m.runSubjs},
-                {"mantra",     "mantra",     m.runMantra},
-                {"jsecret",    "jsecret",    m.runJsecret},
-                {"trufflehog", "trufflehog", func(c context.Context, _ string) { m.runTrufflehog(c) }},
-        }
+	tools := []jsTool{
+		{"subjs",      "subjs",      m.runSubjs},
+		{"mantra",     "mantra",     m.runMantra},
+		{"jsecret",    "jsecret",    m.runJsecret},
+		{"trufflehog", "trufflehog", func(c context.Context, _ string) { m.runTrufflehog(c) }},
+		{"gitleaks",   "gitleaks",   func(c context.Context, _ string) { m.runGitleaks(c) }},
+	}
 
         var wg sync.WaitGroup
         anyRan := false
@@ -110,13 +114,16 @@ func (m *Module) runSubjs(ctx context.Context, input string) {
         m.log.Tool("subjs", fmt.Sprintf("%d JS URLs", count))
         m.log.ToolCmd("subjs", []string{}, fmt.Sprintf("[%d JS URLs via stdin]", count))
 
+        tcfg := m.cfg.Tools["subjs"]
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+
         r := runner.Run(ctx, "subjs", nil,
                 runner.WithStdin(input),
-                runner.WithTimeout(5*time.Minute),
+                runner.WithTimeout(timeout),
                 runner.WithStderrCallback(func(line string) { m.log.Debug("subjs: %s", line) }))
 
         if r.IsTimeout() {
-                m.log.ToolTimeout("subjs", len(r.Lines), 5*time.Minute)
+                m.log.ToolTimeout("subjs", len(r.Lines), timeout)
         } else if r.Err != nil && len(r.Lines) == 0 {
                 m.log.ToolError("subjs", fmt.Errorf(r.DiagString()), r.Stderr)
                 return
@@ -163,9 +170,12 @@ func (m *Module) runMantra(ctx context.Context, input string) {
 		return file, val
 	}
 
+	tcfg := m.cfg.Tools["mantra"]
+	timeout := time.Duration(tcfg.Timeout) * time.Second
+
 	r := runner.Run(ctx, "mantra", nil,
 		runner.WithStdin(input),
-		runner.WithTimeout(5*time.Minute),
+		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("mantra: %s", line) }),
 		runner.WithLineCallback(func(line string) {
 			if !isSecretLine(line) {
@@ -179,7 +189,7 @@ func (m *Module) runMantra(ctx context.Context, input string) {
 		}))
 
 	if r.IsTimeout() {
-		m.log.ToolTimeout("mantra", secretCount, 5*time.Minute)
+		m.log.ToolTimeout("mantra", secretCount, timeout)
 	} else if r.Err != nil {
 		m.log.ToolError("mantra", fmt.Errorf(r.DiagString()), r.Stderr)
 	} else {
@@ -213,9 +223,12 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
 		return file, val
 	}
 
+	tcfg := m.cfg.Tools["jsecret"]
+	timeout := time.Duration(tcfg.Timeout) * time.Second
+
 	r := runner.Run(ctx, "jsecret", nil,
 		runner.WithStdin(input),
-		runner.WithTimeout(5*time.Minute),
+		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("jsecret: %s", line) }),
 		runner.WithLineCallback(func(line string) {
 			if !isSecretLine(line) {
@@ -229,7 +242,7 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
 		}))
 
 	if r.IsTimeout() {
-                m.log.ToolTimeout("jsecret", secretCount, 5*time.Minute)
+		m.log.ToolTimeout("jsecret", secretCount, timeout)
         } else if r.Err != nil {
                 m.log.ToolError("jsecret", fmt.Errorf(r.DiagString()), r.Stderr)
         } else {
@@ -240,7 +253,7 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
 func (m *Module) runTrufflehog(ctx context.Context) {
         tcfg := m.cfg.Tools["trufflehog"]
         start := time.Now()
-        args := []string{"filesystem", m.outDir, "--json", "--results=verified"}
+        args := []string{"filesystem", m.outDir, "--json", "--results=verified", "--no-update"}
         m.log.Tool("trufflehog", fmt.Sprintf("filesystem: %s", m.outDir))
         m.log.ToolCmd("trufflehog", args, "")
 
@@ -286,10 +299,9 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
         start := time.Now()
         org := m.cfg.Target.OrgName
         token := m.cfg.Tokens["github"]
-        args := []string{"github", "--org=" + org, "--results=verified", "--json"}
-
+        args := []string{"github", "--org=" + org, "--results=verified", "--token=" + token, "--json", "--no-update"}
         m.log.Tool("trufflehog-github", org)
-        m.log.ToolCmd("trufflehog", []string{"github", "--org=" + org, "--results=verified", "--token=***", "--json"}, "")
+        m.log.ToolCmd("trufflehog", []string{"github", "--org=" + org, "--results=verified", "--token=***", "--json", "--no-update"}, "")
 
         secretCount := 0
         r := runner.Run(ctx, "trufflehog", args,
@@ -317,6 +329,57 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
         } else {
                 m.log.ToolDone("trufflehog-github", secretCount, time.Since(start))
         }
+}
+
+func (m *Module) runGitleaks(ctx context.Context) {
+	start := time.Now()
+	reportFile := filepath.Join(m.outDir, "gitleaks_report.json")
+	args := []string{"dir", m.outDir, "--report-format", "json", "--report-path", reportFile}
+	m.log.Tool("gitleaks", fmt.Sprintf("filesystem: %s", m.outDir))
+	m.log.ToolCmd("gitleaks", args, "")
+
+	secretCount := 0
+	r := runner.Run(ctx, "gitleaks", args,
+		runner.WithTimeout(5*time.Minute),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("gitleaks: %s", line) }),
+	)
+
+	if data, err := os.ReadFile(reportFile); err == nil && len(data) > 2 {
+		var findings []struct {
+			Description string `json:"Description"`
+			Secret      string `json:"Secret"`
+			File        string `json:"File"`
+			RuleID      string `json:"RuleID"`
+		}
+		if err := json.Unmarshal(data, &findings); err == nil {
+			for _, f := range findings {
+				secType := f.Description
+				if secType == "" {
+					secType = f.RuleID
+				}
+				if secType == "" {
+					secType = "Potential Secret"
+				}
+				m.store.AddSecret(&store.Secret{
+					Type:   secType,
+					Value:  util.Truncate(f.Secret, 200),
+					Source: "gitleaks",
+					File:   filepath.Base(f.File),
+				})
+				secretCount++
+				m.log.Secret(secType, "gitleaks", util.Truncate(f.Secret, 60))
+				m.log.Finding("high", "Secret ("+secType+")", f.File)
+			}
+		}
+	}
+
+	if r.IsTimeout() {
+		m.log.ToolTimeout("gitleaks", secretCount, 5*time.Minute)
+	} else if r.Err != nil && secretCount == 0 && !util.FileExists(reportFile) {
+		m.log.ToolError("gitleaks", fmt.Errorf(r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("gitleaks", secretCount, time.Since(start))
+	}
 }
 
 func classifySecret(line string) string {
