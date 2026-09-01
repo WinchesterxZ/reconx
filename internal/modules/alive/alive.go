@@ -442,6 +442,7 @@ func (m *Module) runWAFDetection(ctx context.Context) {
         r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
 
         wafCount := 0
+        seenWAF := make(map[string]bool)
         for _, line := range r.Lines {
                 line = strings.TrimSpace(line)
                 if line == "" {
@@ -449,13 +450,13 @@ func (m *Module) runWAFDetection(ctx context.Context) {
                 }
                 // wafw00f output: "The site http://... is behind <WAF> WAF."
                 // or:             "No WAF detected"
-                detected := !strings.Contains(strings.ToLower(line), "no waf") &&
-                        !strings.Contains(strings.ToLower(line), "generic") &&
-                        strings.Contains(strings.ToLower(line), "behind")
+                lower := strings.ToLower(line)
+                detected := !strings.Contains(lower, "no waf") &&
+                        !strings.Contains(lower, "generic") &&
+                        strings.Contains(lower, "behind")
 
                 if detected {
-                        wafCount++
-                        // Extract host and WAF name for store
+                        // Extract host and WAF name
                         host := ""
                         waf := "unknown"
                         if idx := strings.Index(line, "http"); idx >= 0 {
@@ -464,16 +465,30 @@ func (m *Module) runWAFDetection(ctx context.Context) {
                                         host = rest[:end]
                                 }
                         }
-                        if idx := strings.Index(strings.ToLower(line), "behind "); idx >= 0 {
-                                rest := line[idx+7:]
-                                if end := strings.IndexAny(rest, " ."); end > 0 {
+                        if idx := strings.Index(lower, "behind "); idx >= 0 {
+                                rest := strings.TrimSpace(line[idx+7:])
+                                if strings.HasPrefix(strings.ToLower(rest), "a ") {
+                                        rest = strings.TrimSpace(rest[2:])
+                                } else if strings.HasPrefix(strings.ToLower(rest), "an ") {
+                                        rest = strings.TrimSpace(rest[3:])
+                                }
+                                if end := strings.IndexAny(rest, " .("); end > 0 {
                                         waf = rest[:end]
+                                } else {
+                                        waf = rest
                                 }
                         }
                         host = strings.TrimSpace(stripAnsi(host))
                         waf = strings.TrimSpace(stripAnsi(waf))
-                        m.store.AddWAFResult(&store.WAFResult{Host: host, WAF: waf, Detected: true})
-                        m.log.Warn("WAF detected: %s — %s", host, waf)
+                        if host != "" && waf != "" && waf != "a" && waf != "an" {
+                                key := host + ":" + waf
+                                if !seenWAF[key] {
+                                        seenWAF[key] = true
+                                        wafCount++
+                                        m.store.AddWAFResult(&store.WAFResult{Host: host, WAF: waf, Detected: true})
+                                        m.log.Warn("WAF detected: %s — %s", host, waf)
+                                }
+                        }
                 }
         }
 

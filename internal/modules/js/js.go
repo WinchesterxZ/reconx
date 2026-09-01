@@ -383,46 +383,106 @@ func (m *Module) runGitleaks(ctx context.Context) {
 }
 
 func classifySecret(line string) string {
-        ll := strings.ToLower(line)
-        switch {
-        case strings.Contains(ll, "akia") || strings.Contains(ll, "aws_access"):
-                return "AWS Access Key"
-        case strings.Contains(ll, "aws_secret"):
-                return "AWS Secret Key"
-        case strings.Contains(ll, "ghp_"):
-                return "GitHub Token"
-        case strings.Contains(ll, "eyj"):
-                return "JWT Token"
-        case strings.Contains(ll, "xox"):
-                return "Slack Token"
-        case strings.Contains(ll, "aiza"):
-                return "Google API Key"
-        case strings.Contains(ll, "sk_live"):
-                return "Stripe Secret Key"
-        case strings.Contains(ll, "-----begin"):
-                return "Private Key"
-        case strings.Contains(ll, "password") || strings.Contains(ll, "passwd"):
-                return "Password"
-        case strings.Contains(ll, "api_key") || strings.Contains(ll, "apikey"):
-                return "API Key"
-        case strings.Contains(ll, "token"):
-                return "Auth Token"
-        default:
-                return "Potential Secret"
-        }
+	ll := strings.ToLower(line)
+	switch {
+	case strings.Contains(ll, "aiza"):
+		return "Google API Key"
+	case strings.Contains(ll, "akia") || strings.Contains(ll, "aws_access"):
+		return "AWS Access Key"
+	case strings.Contains(ll, "aws_secret"):
+		return "AWS Secret Key"
+	case strings.Contains(ll, "ghp_") || strings.Contains(ll, "github_pat_"):
+		return "GitHub Token"
+	case strings.Contains(ll, "eyj"):
+		return "JWT Token"
+	case strings.Contains(ll, "xoxb-") || strings.Contains(ll, "xoxp-") || strings.Contains(ll, "xoxa-"):
+		return "Slack Token"
+	case strings.Contains(ll, "sk_live_"):
+		return "Stripe Secret Key"
+	case strings.Contains(ll, "-----begin"):
+		return "Private Key"
+	case strings.Contains(ll, "bearer "):
+		return "Bearer Token"
+	case strings.Contains(ll, "securitytoken="):
+		return "Auth Token"
+	case strings.Contains(ll, "api_key") || strings.Contains(ll, "apikey"):
+		return "API Key"
+	case strings.Contains(ll, "password") || strings.Contains(ll, "passwd"):
+		return "Password"
+	case strings.Contains(ll, "token"):
+		return "Auth Token"
+	default:
+		return "Potential Secret"
+	}
 }
 
 func isSecretLine(line string) bool {
-        ll := strings.ToLower(line)
-        for _, kw := range []string{
-                "api_key", "apikey", "api-key", "token", "secret",
-                "password", "passwd", "auth", "credential", "bearer",
-                "akia", "eyj", "private", "-----begin", "xox", "ghp_",
-                "sk_live", "sg.", "aiza",
-        } {
-                if strings.Contains(ll, kw) {
-                        return true
-                }
-        }
-        return false
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return false
+	}
+
+	// 1. Filter out error/status messages from tools (mantra, jsecret, etc.)
+	if strings.HasPrefix(line, "[-]") ||
+		strings.HasPrefix(line, "[!]") ||
+		strings.Contains(line, "Unable to make a request") ||
+		strings.Contains(line, "Unable to read the body") ||
+		strings.Contains(line, "Regex Error") ||
+		strings.Contains(line, "error:") ||
+		strings.Contains(line, "failed to") ||
+		strings.Contains(line, "Usage:") {
+		return false
+	}
+
+	// 2. Filter out generic JS code patterns (function declarations, method definitions)
+	ll := strings.ToLower(line)
+	if strings.Contains(ll, ":function") ||
+		strings.Contains(ll, "=function") ||
+		strings.Contains(ll, ": function") ||
+		strings.Contains(ll, "= function") ||
+		strings.Contains(ll, "function(") ||
+		strings.Contains(ll, "=>") {
+		return false
+	}
+
+	// 3. Filter out UI / Framework schema dictionary keys (huge false positive source)
+	if strings.Contains(ll, "key:\"") ||
+		strings.Contains(ll, "key='") ||
+		strings.Contains(ll, "key=\"") ||
+		strings.Contains(ll, "datakey:") ||
+		strings.Contains(ll, "titlekey:") ||
+		strings.Contains(ll, "arialabelkey:") ||
+		strings.Contains(ll, "mozprintablekey:") ||
+		strings.Contains(ll, "selectednavitemkey") ||
+		strings.Contains(ll, "ruleskey:") ||
+		strings.Contains(ll, "i18nkey:") ||
+		strings.Contains(ll, "ref_key:") ||
+		strings.Contains(ll, "action:") ||
+		strings.Contains(ll, "displaykey:") {
+		return false
+	}
+
+	// 4. Filter out dummy / boilerplate matches
+	if strings.Contains(ll, "https://a@") ||
+		strings.Contains(ll, "password=\"password\"") ||
+		strings.Contains(ll, "password:\"wrongpassword\"") ||
+		strings.Contains(ll, "password=secure_string") ||
+		strings.Contains(ll, "email:function") ||
+		strings.Contains(ll, "email:\"account@mail") ||
+		strings.Contains(ll, "email:\"test@example") ||
+		strings.Contains(ll, "email:\"teste@") {
+		return false
+	}
+
+	// 5. Must contain a meaningful secret keyword or high-confidence signature
+	for _, kw := range []string{
+		"aiza", "akia", "ghp_", "sk_live_", "-----begin", "securitytoken=",
+		"api_key", "apikey", "api-key", "token", "secret", "bearer ",
+		"password", "passwd", "auth_token", "access_token",
+	} {
+		if strings.Contains(ll, kw) {
+			return true
+		}
+	}
+	return false
 }

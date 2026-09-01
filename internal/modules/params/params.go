@@ -117,13 +117,11 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir string) in
 	}
 
 	outFile := filepath.Join(paramsDir, "arjun_results.json")
-
 	args := []string{
 		"-i", targetsFile,
 		"-oJ", outFile,
 		"-t", "5",
 		"--stable",
-		"--passive", // check wayback/commoncrawl for known params (no extra HTTP requests)
 	}
 
 	// Inject bug bounty header
@@ -155,21 +153,19 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir string) in
 	board := m.log.NewProgressBoard()
 	board.Register("arjun", fmt.Sprintf("%d endpoints", countLines(targetsFile)))
 
-	// NOTE: No file-watcher goroutine — arjun only writes JSON at the very end,
-	// cancelling the context before it finishes writing corrupts the output file.
 	r := runner.Run(ctx, path, args,
-runner.WithTimeout(timeout),
-runner.WithLineCallback(func(line string) { board.Heartbeat("arjun") }),
-runner.WithStderrCallback(func(line string) {
-m.log.Debug("arjun: %s", line)
-board.Heartbeat("arjun")
-}),
-)
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) { board.Heartbeat("arjun") }),
+		runner.WithStderrCallback(func(line string) {
+			m.log.Debug("arjun: %s", line)
+			board.Heartbeat("arjun")
+		}),
+	)
 
 	totalParams := 0
 	if data, err := os.ReadFile(outFile); err == nil && len(data) > 2 {
 		totalParams = m.parseArjunResults(data)
-	} else if r.Err != nil {
+	} else if r.Err != nil && totalParams == 0 {
 		m.log.ToolError("arjun", fmt.Errorf(r.DiagString()), r.Stderr)
 	}
 
@@ -265,22 +261,22 @@ func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string)
 
 	count := 0
 	r := runner.Run(ctx, "dalfox", args,
-runner.WithStdin(input),
-runner.WithTimeout(timeout),
-runner.WithStderrCallback(func(line string) { m.log.Debug("dalfox: %s", line) }),
-runner.WithLineCallback(func(line string) {
-line = strings.TrimSpace(line)
-if line == "" || !strings.HasPrefix(line, "{") {
-return
-}
-// dalfox JSON: {"type":"POC","method":"GET","param":"name","url":"..."}
-paramName := jsonStr(line, "param")
-targetURL := jsonStr(line, "url")
-method := jsonStr(line, "method")
-if paramName == "" || targetURL == "" {
-return
-}
-m.store.AddParamFinding(&store.ParamFinding{
+		runner.WithStdin(input),
+		runner.WithTimeout(timeout),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("dalfox: %s", line) }),
+		runner.WithLineCallback(func(line string) {
+			line = strings.TrimSpace(line)
+			if line == "" || !strings.HasPrefix(line, "{") {
+				return
+			}
+			// dalfox JSON: {"type":"POC","method":"GET","param":"name","url":"..."}
+			paramName := jsonStr(line, "param")
+			targetURL := jsonStr(line, "url")
+			method := jsonStr(line, "method")
+			if paramName == "" || targetURL == "" {
+				return
+			}
+			m.store.AddParamFinding(&store.ParamFinding{
 				URL:    targetURL,
 				Method: method,
 				Params: []string{paramName},
@@ -293,7 +289,7 @@ m.store.AddParamFinding(&store.ParamFinding{
 
 	if r.IsTimeout() {
 		m.log.ToolTimeout("dalfox", count, timeout)
-	} else if r.Err != nil && count == 0 {
+	} else if r.Err != nil && count == 0 && !strings.Contains(strings.Join(r.Stderr, " "), "UNREACHABLE") {
 		m.log.ToolError("dalfox", fmt.Errorf(r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("dalfox", count, time.Since(start))
@@ -322,9 +318,9 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) int {
 	tmpFile.Close()
 
 	outFile := filepath.Join(paramsDir, "getjs_endpoints.txt")
-	args := []string{"--input", tmpFile.Name(), "--output", outFile, "--complete", "--resolve"}
+	args := []string{"-input", tmpFile.Name(), "-output", outFile, "-complete", "-resolve"}
 	if m.cfg.BugBountyHeader != "" {
-		args = append(args, "-H", m.cfg.BugBountyHeader)
+		args = append(args, "-header", m.cfg.BugBountyHeader)
 	}
 
 	m.log.Tool("getJS", fmt.Sprintf("%d JS files — extracting endpoint URLs", len(jsFiles)))
@@ -332,9 +328,9 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) int {
 	start := time.Now()
 
 	r := runner.Run(ctx, "getJS", args,
-runner.WithTimeout(10*time.Minute),
-runner.WithStderrCallback(func(line string) { m.log.Debug("getJS: %s", line) }),
-)
+		runner.WithTimeout(10*time.Minute),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("getJS: %s", line) }),
+	)
 
 	count := 0
 	for _, line := range r.Lines {
