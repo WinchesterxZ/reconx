@@ -83,7 +83,7 @@ func (m *Module) Run(ctx context.Context) error {
         totalFindings := 0
         baseArgs := []string{
                 "-l", targetFile,
-                "-json",
+                "-j",
                 "-silent",
                 "-no-color",
                 "-retries", "2",

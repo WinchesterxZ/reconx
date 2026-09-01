@@ -208,7 +208,13 @@ func (m *Module) runWaymore(ctx context.Context, input string) []string {
                         defer func() { <-sem }()
                         args := []string{"-i", d, "-mode", "U", "-oU", "/dev/stdout"}
                         m.log.ToolCmd("waymore", args, "")
+                        tcfg := m.cfg.Tools["waymore"]
+                        timeout := time.Duration(tcfg.Timeout) * time.Second
+                        if timeout == 0 {
+                                timeout = 5 * time.Minute
+                        }
                         r := runner.Run(ctx, "waymore", args,
+                                runner.WithTimeout(timeout),
                                 runner.WithStderrCallback(func(line string) { m.log.Debug("waymore[%s]: %s", d, line) }))
                         if r.Err != nil && len(r.Lines) == 0 {
                                 m.log.Debug("waymore[%s]: %s", d, r.DiagString())
@@ -238,6 +244,12 @@ func (m *Module) runGAU(ctx context.Context, input string) []string {
                 sem = make(chan struct{}, 3) // max 3 concurrent gau instances
         )
 
+        tcfg := m.cfg.Tools["gau"]
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 3 * time.Minute
+        }
+
         for _, d := range rootDomains {
                 d := d
                 wg.Add(1)
@@ -248,6 +260,7 @@ func (m *Module) runGAU(ctx context.Context, input string) []string {
                         args := []string{"--threads", "5", "--providers", "wayback,commoncrawl,urlscan"}
                         m.log.ToolCmd("gau", append(args, d), "")
                         r := runner.Run(ctx, "gau", append(args, d),
+                                runner.WithTimeout(timeout),
                                 runner.WithStderrCallback(func(line string) { m.log.Debug("gau[%s]: %s", d, line) }))
                         if r.Err == nil || len(r.Lines) > 0 {
                                 mu.Lock()
@@ -273,6 +286,12 @@ func (m *Module) runGAUPlus(ctx context.Context, input string) []string {
                 sem = make(chan struct{}, 3)
         )
 
+        tcfg := m.cfg.Tools["gauplus"]
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 3 * time.Minute
+        }
+
         for _, d := range rootDomains {
                 d := d
                 wg.Add(1)
@@ -282,6 +301,7 @@ func (m *Module) runGAUPlus(ctx context.Context, input string) []string {
                         defer func() { <-sem }()
                         args := []string{"-t", "5", "-random-agent"}
                         r := runner.Run(ctx, "gauplus", append(args, d),
+                                runner.WithTimeout(timeout),
                                 runner.WithStderrCallback(func(line string) { m.log.Debug("gauplus[%s]: %s", d, line) }))
                         if r.Err == nil || len(r.Lines) > 0 {
                                 mu.Lock()
@@ -303,9 +323,14 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
         m.log.Tool("katana", fmt.Sprintf("%d hosts — deep crawl (headless JS)", count))
         m.log.ToolCmd("katana", args, fmt.Sprintf("[%d hosts via stdin]", count))
 
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 10 * time.Minute
+        }
+
         r := runner.Run(ctx, "katana", args,
                 runner.WithStdin(input),
-                // no timeout — runs until complete
+                runner.WithTimeout(timeout),
                 runner.WithStderrCallback(func(line string) {
                         m.log.Debug("katana: %s", line)
                         if m.board != nil {
@@ -314,7 +339,7 @@ func (m *Module) runKatana(ctx context.Context, input string) []string {
                 }))
 
         if r.IsTimeout() {
-                m.log.ToolTimeout("katana", len(r.Lines), time.Duration(tcfg.Timeout)*time.Second)
+                m.log.ToolTimeout("katana", len(r.Lines), timeout)
                 return r.Lines
         }
         if r.Err != nil && len(r.Lines) == 0 {
@@ -332,12 +357,19 @@ func (m *Module) runHakrawler(ctx context.Context, input string) []string {
         m.log.Tool("hakrawler", fmt.Sprintf("%d hosts", count))
         m.log.ToolCmd("hakrawler", args, fmt.Sprintf("[%d hosts via stdin]", count))
 
+        tcfg := m.cfg.Tools["hakrawler"]
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 5 * time.Minute
+        }
+
         r := runner.Run(ctx, "hakrawler", args,
                 runner.WithStdin(input),
+                runner.WithTimeout(timeout),
                 runner.WithStderrCallback(func(line string) { m.log.Debug("hakrawler: %s", line) }))
 
         if r.IsTimeout() {
-                m.log.ToolTimeout("hakrawler", len(r.Lines), 5*time.Minute)
+                m.log.ToolTimeout("hakrawler", len(r.Lines), timeout)
                 return r.Lines
         }
         if r.Err != nil && len(r.Lines) == 0 {
@@ -351,16 +383,23 @@ func (m *Module) runHakrawler(ctx context.Context, input string) []string {
 func (m *Module) runGospider(ctx context.Context, input string) []string {
         start := time.Now()
         count := strings.Count(input, "\n") + 1
-        args := []string{"-S", "-", "-t", "10", "-d", "3", "--js", "--sitemap", "--robots", "-q"}
+        args := []string{"-S", "-", "-t", "10", "-d", "3", "--sitemap", "--robots"}
         m.log.Tool("gospider", fmt.Sprintf("%d hosts", count))
         m.log.ToolCmd("gospider", args, fmt.Sprintf("[%d hosts via stdin]", count))
 
+        tcfg := m.cfg.Tools["gospider"]
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 5 * time.Minute
+        }
+
         r := runner.Run(ctx, "gospider", args,
                 runner.WithStdin(input),
+                runner.WithTimeout(timeout),
                 runner.WithStderrCallback(func(line string) { m.log.Debug("gospider: %s", line) }))
 
         if r.IsTimeout() {
-                m.log.ToolTimeout("gospider", len(r.Lines), 5*time.Minute)
+                m.log.ToolTimeout("gospider", len(r.Lines), timeout)
         } else if r.Err != nil && len(r.Lines) == 0 {
                 m.log.ToolError("gospider", fmt.Errorf(r.DiagString()), r.Stderr)
                 return nil
@@ -396,6 +435,12 @@ func (m *Module) runParamSpider(ctx context.Context, input string) []string {
                 sem = make(chan struct{}, 10) // 10 concurrent
         )
 
+        tcfg := m.cfg.Tools["paramspider"]
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 3 * time.Minute
+        }
+
         for _, d := range domains {
                 d := d
                 if d == "" {
@@ -409,6 +454,7 @@ func (m *Module) runParamSpider(ctx context.Context, input string) []string {
                         // Use -s flag for silent output (replaces --quiet which doesn't exist)
                         args := []string{"-d", d, "-s"}
                         r := runner.Run(ctx, "paramspider", args,
+                                runner.WithTimeout(timeout),
                                 runner.WithStderrCallback(func(line string) { m.log.Debug("paramspider[%s]: %s", d, line) }))
                         if r.Err == nil || len(r.Lines) > 0 {
                                 mu.Lock()

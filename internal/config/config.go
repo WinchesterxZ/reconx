@@ -41,6 +41,12 @@ type PhasesConfig struct {
         JSAnalysis    bool
         VulnScan      bool
         Report        bool
+
+        // New phases (Batch 1+)
+        DirFuzz    bool // Phase 4.7 — Directory & content fuzzing (feroxbuster/ffuf/dirsearch)
+        Params     bool // Phase 5   — Hidden parameter discovery (arjun)
+        CloudEnum  bool // Phase 6   — Cloud/S3 bucket enumeration
+        CORS       bool // Phase 6   — CORS misconfiguration scan
 }
 
 // OutputConfig controls output behavior
@@ -82,6 +88,10 @@ func DefaultConfig() *Config {
                         JSAnalysis:    true,
                         VulnScan:      true,
                         Report:        true,
+                        DirFuzz:       false, // opt-in: not all bug bounty programs allow directory fuzzing
+                        Params:        false, // opt-in: parameter discovery can be slow/intrusive
+                        CloudEnum:     true,
+                        CORS:          true,
                 },
                 Output: OutputConfig{
                         OutputDir:   "./reconx-output",
@@ -139,41 +149,41 @@ func DefaultConfig() *Config {
                                 Timeout: 1800, // 30 min
                         },
 
-                        // ── URL discovery ────────────────────────────────────────────────
-                        "waybackurls": {
-                                Enabled: true, Path: "waybackurls",
-                                Timeout: 0, // no timeout — runs until complete
-                        },
-                        "waymore": {
-                                Enabled: true, Path: "waymore",
-                                Timeout: 0, // no timeout
-                        },
-                        "gau": {
-                                Enabled: true, Path: "gau",
-                                Flags:   []string{"--threads", "50"},
-                                Timeout: 0, // no timeout
-                        },
-                        "gauplus": {
-                                Enabled: true, Path: "gauplus",
-                                Timeout: 0, // no timeout
-                        },
-                        "katana": {
-                                Enabled: true, Path: "katana",
-                                Flags:   []string{"-jc", "-kf", "all", "-d", "5", "-silent"},
-                                Timeout: 0, // no timeout
-                        },
-                        "hakrawler": {
-                                Enabled: true, Path: "hakrawler",
-                                Timeout: 0, // no timeout
-                        },
-                        "gospider": {
-                                Enabled: true, Path: "gospider",
-                                Timeout: 0, // no timeout
-                        },
-                        "paramspider": {
-                                Enabled: true, Path: "paramspider",
-                                Timeout: 0, // no timeout
-                        },
+			// ── URL discovery ────────────────────────────────────────────────
+			"waybackurls": {
+				Enabled: true, Path: "waybackurls",
+				Timeout: 300, // 5 min default, 0 with --no-timeout
+			},
+			"waymore": {
+				Enabled: true, Path: "waymore",
+				Timeout: 300,
+			},
+			"gau": {
+				Enabled: true, Path: "gau",
+				Flags:   []string{"--threads", "50"},
+				Timeout: 300,
+			},
+			"gauplus": {
+				Enabled: true, Path: "gauplus",
+				Timeout: 300,
+			},
+			"katana": {
+				Enabled: true, Path: "katana",
+				Flags:   []string{"-jc", "-kf", "all", "-d", "5", "-silent"},
+				Timeout: 600,
+			},
+			"hakrawler": {
+				Enabled: true, Path: "hakrawler",
+				Timeout: 300,
+			},
+			"gospider": {
+				Enabled: true, Path: "gospider",
+				Timeout: 300,
+			},
+			"paramspider": {
+				Enabled: true, Path: "paramspider",
+				Timeout: 300,
+			},
 
                         // ── JS / Secrets ─────────────────────────────────────────────────
                         "trufflehog": {Enabled: true, Path: "trufflehog", Timeout: 1800},
@@ -186,6 +196,61 @@ func DefaultConfig() *Config {
                                 Enabled: true, Path: "nuclei",
                                 Flags:   []string{"-severity", "critical,high,medium", "-silent"},
                                 Timeout: 3600, // 60 min per template category
+                        },
+
+                        // ── Directory fuzzing ───────────────────────────────────────────
+                        "feroxbuster": {
+                                Enabled: true, Path: "feroxbuster",
+                                Flags:   []string{"-k", "-d", "3", "-e", "-x", "php,html,json,js,log,txt,bak,old,zip"},
+                                Timeout: 3600,
+                        },
+                        "ffuf": {
+                                Enabled: true, Path: "ffuf",
+                                Flags:   []string{"-mc", "200,301,302,403", "-recursion", "-recursion-depth", "2"},
+                                Timeout: 3600,
+                        },
+                        "dirsearch": {
+                                Enabled: true, Path: "dirsearch",
+                                Flags:   []string{"-e", "php,asp,aspx,jsp,json,xml,bak,old,zip", "--exclude-status=404"},
+                                Timeout: 1800,
+                        },
+
+                        // ── WAF & TLS (Alive sub-phases) ───────────────────────────────
+                        "wafw00f": {
+                                Enabled: true, Path: "wafw00f",
+                                Timeout: 300,
+                        },
+                        "tlsx": {
+                                Enabled: true, Path: "tlsx",
+                                Flags:   []string{"-san", "-cn", "-silent"},
+                                Timeout: 300,
+                        },
+                        "favfreak": {
+                                Enabled: true, Path: "favfreak",
+                                Timeout: 300,
+                        },
+
+                        // ── Wildcard & mass DNS (Subdomain sub-phases) ──────────────────
+                        "massdns": {
+                                Enabled: true, Path: "massdns",
+                                Timeout: 1800,
+                        },
+
+                        // ── Hidden parameters ──────────────────────────────────────────
+                        "arjun": {
+                                Enabled: true, Path: "arjun",
+                                Flags:   []string{"--stable"},
+                                Timeout: 1800,
+                        },
+
+                        // ── Cloud / bucket enum ────────────────────────────────────────
+                        "s3scanner": {
+                                Enabled: true, Path: "s3scanner",
+                                Timeout: 600,
+                        },
+                        "cloud_enum": {
+                                Enabled: true, Path: "cloud_enum",
+                                Timeout: 600,
                         },
                 },
                 Tokens: map[string]string{},
@@ -389,6 +454,14 @@ func applyConfigValue(cfg *Config, section, key, value string) {
                         cfg.Phases.VulnScan = parseBool(value)
                 case "report":
                         cfg.Phases.Report = parseBool(value)
+                case "dir_fuzz":
+                        cfg.Phases.DirFuzz = parseBool(value)
+                case "params":
+                        cfg.Phases.Params = parseBool(value)
+                case "cloud_enum":
+                        cfg.Phases.CloudEnum = parseBool(value)
+                case "cors":
+                        cfg.Phases.CORS = parseBool(value)
                 }
 
         case "tokens":

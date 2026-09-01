@@ -1,9 +1,6 @@
 import path from "path";
 
-// Auto-detect reconx project root (parent of web/)
-// Works no matter where the project is cloned
-const RECONX_ROOT = path.resolve(process.cwd(), "..");
-
-export const BINARY_PATH = path.join(RECONX_ROOT, "dist", "reconx-linux-amd64");
-export const SCANS_DIR = path.join(RECONX_ROOT, "scans");
-export const OUTPUT_DIR = path.join(RECONX_ROOT, "output");
+export const PROJECT_ROOT = path.resolve(process.cwd(), "..");
+export const BINARY_PATH = process.env.RECONX_BINARY || path.join(PROJECT_ROOT, "reconx");
+export const SCANS_DIR = process.env.RECONX_SCANS_DIR || path.join(process.cwd(), "data", "scans");
+export const OUTPUT_DIR = process.env.RECONX_OUTPUT_DIR || path.join(PROJECT_ROOT, "reconx-output");

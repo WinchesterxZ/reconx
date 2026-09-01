@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,14 +23,47 @@ import (
 	"github.com/reconx/reconx/pkg/runner"
 )
 
+var defaultTransport = &http.Transport{
+	Proxy: http.ProxyFromEnvironment,
+	DialContext: (&net.Dialer{
+		Timeout:   10 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 5 * time.Second}
+				// If local WSL resolver hangs/drops, fallback to 1.1.1.1 or 8.8.8.8
+				conn, err := d.DialContext(ctx, "udp", "1.1.1.1:53")
+				if err != nil {
+					return d.DialContext(ctx, "udp", "8.8.8.8:53")
+				}
+				return conn, nil
+			},
+		},
+	}).DialContext,
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 20,
+	IdleConnTimeout:     90 * time.Second,
+	TLSHandshakeTimeout: 10 * time.Second,
+}
+
+var apiClient = &http.Client{
+	Transport: defaultTransport,
+	Timeout:   35 * time.Second,
+}
+
 // ── Binary-backed runners added in this file ─────────────────────────────────
 
 // runCrobat uses the crobat binary (Rust tool, fast passive DNS).
 // API: https://github.com/cgboal/sonarsearch — crobat wraps it.
 func (m *Module) runCrobat(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
 	r := runner.Run(ctx, "crobat", []string{"-s", domain},
-		runner.WithTimeout(3*time.Minute),
+		runner.WithTimeout(30*time.Second),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("crobat: %s", line) }))
+	if r.Err != nil && strings.Contains(r.DiagString(), "omnisint") {
+		board.Skip("crobat", "omnisint RPC offline")
+		return nil, nil
+	}
 	finalize(board, "crobat", r)
 	return r.Lines, r.Stderr
 }
@@ -43,16 +77,17 @@ func (m *Module) runShuffleDNS(ctx context.Context, domain string, board *logger
 		return nil, nil
 	}
 	resolvers := findResolvers(m.cfg)
+	if resolvers == "" {
+		board.Skip("shuffledns", "no resolvers found")
+		return nil, nil
+	}
 	path := "shuffledns"
 	if tcfg, ok := m.cfg.Tools["shuffledns"]; ok && tcfg.Path != "" {
 		path = tcfg.Path
 	}
-	args := []string{"-d", domain, "-w", wordlist, "-silent"}
-	if resolvers != "" {
-		args = append(args, "-r", resolvers)
-	}
+	args := []string{"-d", domain, "-w", wordlist, "-r", resolvers, "-mode", "bruteforce", "-silent"}
 	r := runner.Run(ctx, path, args,
-		runner.WithTimeout(30*time.Minute),
+		runner.WithTimeout(15*time.Minute),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("shuffledns: %s", line) }))
 	finalize(board, "shuffledns", r)
 	return r.Lines, r.Stderr
@@ -220,11 +255,15 @@ func fetchJSONSubdomains(ctx context.Context, apiURL, domain, name string,
 
 	body, status, err := httpGetBody(ctx, apiURL, name, log)
 	if err != nil {
-		board.Fail(name, err.Error())
+		board.Skip(name, "timeout/network")
+		return nil
+	}
+	if status == 404 || status == 400 {
+		board.Done(name, 0)
 		return nil
 	}
 	if status != 200 {
-		board.Fail(name, fmt.Sprintf("HTTP %d", status))
+		board.Skip(name, fmt.Sprintf("HTTP %d", status))
 		return nil
 	}
 
@@ -255,11 +294,15 @@ func fetchRawArraySubdomains(ctx context.Context, apiURL, domain, name string,
 
 	body, status, err := httpGetBody(ctx, apiURL, name, log)
 	if err != nil {
-		board.Fail(name, err.Error())
+		board.Skip(name, "timeout/network")
+		return nil
+	}
+	if status == 404 || status == 400 {
+		board.Done(name, 0)
 		return nil
 	}
 	if status != 200 {
-		board.Fail(name, fmt.Sprintf("HTTP %d", status))
+		board.Skip(name, fmt.Sprintf("HTTP %d", status))
 		return nil
 	}
 
@@ -299,11 +342,15 @@ func fetchJSONKeySubdomains(ctx context.Context, apiURL, domain, keyPath, name s
 
 	body, status, err := httpGetBody(ctx, apiURL, name, log)
 	if err != nil {
-		board.Fail(name, err.Error())
+		board.Skip(name, "timeout/network")
+		return nil
+	}
+	if status == 404 || status == 400 {
+		board.Done(name, 0)
 		return nil
 	}
 	if status != 200 {
-		board.Fail(name, fmt.Sprintf("HTTP %d", status))
+		board.Skip(name, fmt.Sprintf("HTTP %d", status))
 		return nil
 	}
 
@@ -312,7 +359,6 @@ func fetchJSONKeySubdomains(ctx context.Context, apiURL, domain, keyPath, name s
 
 	// Walk the key path: split "page.domain" → walk into ["page"]["domain"]
 	keys := strings.Split(keyPath, ".")
-	// Naive scan: find each key in sequence
 	current := string(body)
 	for _, k := range keys {
 		needle := `"` + k + `":`
@@ -323,7 +369,6 @@ func fetchJSONKeySubdomains(ctx context.Context, apiURL, domain, keyPath, name s
 		}
 		current = strings.TrimSpace(current[idx+len(needle):])
 	}
-	// Now current starts with the array value
 	if !strings.HasPrefix(current, "[") {
 		board.Done(name, 0)
 		return nil
@@ -334,7 +379,6 @@ func fetchJSONKeySubdomains(ctx context.Context, apiURL, domain, keyPath, name s
 		return nil
 	}
 	arrStr := current[:end]
-	// Extract quoted strings
 	for _, part := range strings.Split(arrStr, `"`) {
 		s := strings.ToLower(strings.TrimSpace(part))
 		if s == "" || strings.ContainsAny(s, " \t{}[]:,\n") {
@@ -354,24 +398,28 @@ func fetchJSONKeySubdomains(ctx context.Context, apiURL, domain, keyPath, name s
 
 // fetchAuthedJSONList fetches a URL with an auth header, then extracts a list
 // of strings from a nested JSON path. Used by VirusTotal/Shodan/etc.
-// dataKey is the path to the array (e.g. "data"), valueKey is the field in
-// each array element that holds the value (e.g. "id"). Empty valueKey means
-// the array itself is a list of strings.
 func fetchAuthedJSONList(ctx context.Context, apiURL, domain, name string,
 	board *logger.ProgressBoard, log *logger.Logger,
 	authHeader, authValue, dataKey, valueKey string) []string {
 
 	body, status, err := httpGetBodyWithAuth(ctx, apiURL, name, log, authHeader, authValue)
 	if err != nil {
-		board.Fail(name, err.Error())
+		board.Skip(name, "timeout/network")
+		return nil
+	}
+	if status == 404 || status == 400 {
+		board.Done(name, 0)
+		return nil
+	}
+	if status == 401 || status == 403 {
+		board.Skip(name, "invalid token/quota")
 		return nil
 	}
 	if status != 200 {
-		board.Fail(name, fmt.Sprintf("HTTP %d", status))
+		board.Skip(name, fmt.Sprintf("HTTP %d", status))
 		return nil
 	}
 
-	// Walk into dataKey
 	current := string(body)
 	for _, k := range strings.Split(dataKey, ".") {
 		needle := `"` + k + `":`
@@ -397,7 +445,6 @@ func fetchAuthedJSONList(ctx context.Context, apiURL, domain, name string,
 	var results []string
 
 	if valueKey != "" {
-		// Each element is an object — extract "valueKey":"..."
 		vneedle := `"` + valueKey + `":"`
 		for _, part := range strings.Split(arrStr, vneedle) {
 			if idx := strings.Index(part, `"`); idx > 0 {
@@ -411,8 +458,6 @@ func fetchAuthedJSONList(ctx context.Context, apiURL, domain, name string,
 				}
 			}
 		}
-	} else {
-		// Array of bare strings
 		for _, part := range strings.Split(arrStr, `"`) {
 			s := strings.ToLower(strings.TrimSpace(part))
 			if s == "" || strings.ContainsAny(s, " \t{}[]:,\n") {
@@ -478,43 +523,87 @@ func scrapeSubdomains(ctx context.Context, apiURL, domain, name string,
 
 // httpGetBody performs a GET request and returns the body bytes + status code.
 func httpGetBody(ctx context.Context, apiURL, name string, log *logger.Logger) ([]byte, int, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, "GET", apiURL, nil)
-	if err != nil {
-		return nil, 0, err
+	var (
+		body   []byte
+		status int
+		err    error
+	)
+	for attempt := 0; attempt < 2; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		req, rErr := http.NewRequestWithContext(reqCtx, "GET", apiURL, nil)
+		if rErr != nil {
+			cancel()
+			return nil, 0, rErr
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		req.Header.Set("Accept", "application/json, text/html, */*")
+		resp, dErr := apiClient.Do(req)
+		if dErr == nil {
+			body, _ = io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+			status = resp.StatusCode
+			resp.Body.Close()
+			cancel()
+			if status == 200 || status == 404 || status == 401 || status == 403 {
+				return body, status, nil
+			}
+			err = fmt.Errorf("HTTP %d", status)
+		} else {
+			cancel()
+			err = dErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (reconx) subdomain-enum/1.0")
-	req.Header.Set("Accept", "application/json, text/html, */*")
-	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Debug("%s: %v", name, err)
-		return nil, 0, err
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	return body, resp.StatusCode, nil
+	return body, status, err
 }
 
 // httpGetBodyWithAuth is httpGetBody with an extra header (for API keys).
 func httpGetBodyWithAuth(ctx context.Context, apiURL, name string, log *logger.Logger,
 	headerKey, headerValue string) ([]byte, int, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, "GET", apiURL, nil)
-	if err != nil {
-		return nil, 0, err
+	var (
+		body   []byte
+		status int
+		err    error
+	)
+	for attempt := 0; attempt < 2; attempt++ {
+		reqCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		req, rErr := http.NewRequestWithContext(reqCtx, "GET", apiURL, nil)
+		if rErr != nil {
+			cancel()
+			return nil, 0, rErr
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+		if headerKey != "" && headerValue != "" {
+			req.Header.Set(headerKey, headerValue)
+		}
+		resp, dErr := apiClient.Do(req)
+		if dErr == nil {
+			body, _ = io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+			status = resp.StatusCode
+			resp.Body.Close()
+			cancel()
+			if status == 200 || status == 404 || status == 401 || status == 403 {
+				return body, status, nil
+			}
+			err = fmt.Errorf("HTTP %d", status)
+		} else {
+			cancel()
+			err = dErr
+		}
+		select {
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (reconx) subdomain-enum/1.0")
-	if headerKey != "" && headerValue != "" {
-		req.Header.Set(headerKey, headerValue)
-	}
-	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Debug("%s: %v", name, err)
-		return nil, 0, err
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
-	return body, resp.StatusCode, nil
+	return body, status, err
 }

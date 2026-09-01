@@ -56,9 +56,8 @@ func (m *Module) Run(ctx context.Context) error {
         }
         input := strings.Join(hostList, "\n")
 
-        // Base args — we do NOT pass -rate from config because the config
-        // already supplies it via tcfg.Flags. Old code had a duplicate -rate.
-        args := []string{"-json", "-silent", "-p", "top-1000"}
+        // Base args — use -top-ports 1000 for naabu v2
+        args := []string{"-json", "-silent", "-top-ports", "1000"}
         // Merge in user-configured flags (e.g. -rate 2000).
         args = append(args, tcfg.Flags...)
         m.log.Tool("naabu", fmt.Sprintf("%d live hosts", len(hostList)))

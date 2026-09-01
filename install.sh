@@ -77,6 +77,7 @@ success "GOPATH: $GOPATH"
 info "All tools will be symlinked to /usr/local/bin"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 — Write permanent PATH to shell profiles
 # ─────────────────────────────────────────────────────────────────────────────
 step "Writing permanent PATH configuration"
@@ -90,96 +91,105 @@ for profile in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
         success "Updated $profile"
     fi
 done
-echo "export PATH=\"\$PATH:\$HOME/go/bin:/usr/local/go/bin\"" \
-    | sudo tee /etc/profile.d/go-tools.sh > /dev/null
-sudo chmod +x /etc/profile.d/go-tools.sh
-success "Wrote /etc/profile.d/go-tools.sh (system-wide)"
+
+if [ -f /etc/profile.d/go-tools.sh ] && grep -q "go/bin" /etc/profile.d/go-tools.sh 2>/dev/null; then
+    success "/etc/profile.d/go-tools.sh already configured"
+elif sudo -n true 2>/dev/null; then
+    echo "export PATH=\"\$PATH:\$HOME/go/bin:/usr/local/go/bin\"" \
+        | sudo tee /etc/profile.d/go-tools.sh > /dev/null 2>&1 || true
+    success "Wrote /etc/profile.d/go-tools.sh (system-wide)"
+else
+    success "User shell profiles configured with Go PATH"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 2 — Remove conflicting apt versions BEFORE installing correct ones
-# FIX: apt httpx is old/incompatible, apt amass has libpostal crash
+# FIX: apt httpx is python/old, apt amass has libpostal crash
 # ─────────────────────────────────────────────────────────────────────────────
-step "Removing conflicting apt versions (httpx, amass)"
+step "Checking conflicting apt versions (httpx, amass)"
 
-# Remove apt httpx if present — it's a different tool / incompatible flags
-if dpkg -l httpx 2>/dev/null | grep -q "^ii"; then
-    info "Removing apt httpx (incompatible with reconx — will install ProjectDiscovery version)..."
-    sudo apt-get remove -y httpx 2>/dev/null || true
-    sudo rm -f /usr/bin/httpx
-    success "Removed apt httpx"
-fi
-
-# Remove apt amass if present — it has libpostal dependency that crashes
-if dpkg -l amass 2>/dev/null | grep -q "^ii"; then
-    info "Removing apt amass (has libpostal crash bug — will install prebuilt binary)..."
-    sudo apt-get remove -y amass 2>/dev/null || true
-    sudo rm -f /usr/bin/amass
-    success "Removed apt amass"
-fi
-
-# Also remove any broken version already in /usr/local/bin
-# Detect libpostal crash signature
-if [ -x /usr/local/bin/amass ]; then
-    if /usr/local/bin/amass -version 2>&1 | grep -qi "libpostal"; then
-        warn "Found broken amass with libpostal at /usr/local/bin/amass — replacing..."
-        sudo rm -f /usr/local/bin/amass
+# Remove apt httpx if present as a debian package (conflicts with ProjectDiscovery httpx)
+if dpkg-query -W -f='${Status}' httpx 2>/dev/null | grep -q "install ok installed"; then
+    if sudo -n true 2>/dev/null; then
+        info "Removing apt httpx (incompatible with reconx — using ProjectDiscovery version)..."
+        sudo apt-get remove -y -qq httpx 2>/dev/null || true
+        sudo rm -f /usr/bin/httpx
+        success "Removed apt httpx"
+    else
+        warn "apt httpx package found but sudo requires password — ProjectDiscovery httpx in ~/go/bin will be prioritized"
     fi
+else
+    success "No conflicting apt httpx found"
+fi
+
+# Remove apt amass if present
+if dpkg-query -W -f='${Status}' amass 2>/dev/null | grep -q "install ok installed"; then
+    if sudo -n true 2>/dev/null; then
+        info "Removing apt amass (has libpostal crash bug — will use clean binary)..."
+        sudo apt-get remove -y -qq amass 2>/dev/null || true
+        sudo rm -f /usr/bin/amass
+        success "Removed apt amass"
+    else
+        warn "apt amass package found but sudo requires password — prebuilt binary will be used"
+    fi
+else
+    success "No conflicting apt amass found"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3 — System dependencies
+# STEP 3 — System dependencies (Skip if already satisfied)
 # ─────────────────────────────────────────────────────────────────────────────
-step "Installing system dependencies"
+step "Checking system dependencies"
 
-sudo apt-get update -qq 2>/dev/null || true
-sudo apt-get install -y -qq \
-    git curl wget jq unzip pipx \
-    build-essential libpcap-dev \
-    python3 python3-pip \
-    nmap dnsutils whois \
-    2>/dev/null || true
-success "System deps OK"
+MISSING_DEPS=()
+for dep in git curl wget jq unzip pipx nmap whois; do
+    if ! command -v "$dep" &>/dev/null; then
+        MISSING_DEPS+=("$dep")
+    fi
+done
+
+if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
+    info "Installing missing system packages: ${MISSING_DEPS[*]}..."
+    sudo apt-get update -qq 2>/dev/null || true
+    sudo apt-get install -y -qq \
+        git curl wget jq unzip pipx \
+        build-essential libpcap-dev \
+        python3 python3-pip \
+        nmap dnsutils whois \
+        2>/dev/null || true
+    success "System packages installed"
+else
+    success "System dependencies already satisfied"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Core helper — install Go tool and symlink to /usr/local/bin
-# The symlink is the key: /usr/local/bin is in PATH in every shell on every distro
 # ─────────────────────────────────────────────────────────────────────────────
 install_go_tool() {
     local pkg="$1"
     local name="$2"
-    local dest="/usr/local/bin/$name"
 
-    # Already working at /usr/local/bin — done
-    if [ -x "$dest" ] && [ ! -L "$dest" -o -x "$(readlink -f $dest 2>/dev/null)" ]; then
-        success "$name already installed"
+    # 1. Already available in PATH (e.g. /usr/bin, /usr/local/bin, ~/go/bin)
+    local existing
+    existing=$(command -v "$name" 2>/dev/null)
+    if [ -n "$existing" ] && [ -x "$existing" ]; then
+        success "$name already installed ($existing)"
         return 0
     fi
 
-    # Already in GOPATH — just needs symlinking
+    # 2. Already in GOPATH
     if [ -x "$GOPATH/bin/$name" ]; then
-        sudo ln -sf "$GOPATH/bin/$name" "$dest"
-        success "$name symlinked → /usr/local/bin/$name"
+        success "$name already installed ($GOPATH/bin/$name)"
         return 0
     fi
 
+    # 3. Download and build via Go
     info "Installing $name..."
-    if $GO_BIN install "${pkg}@latest" 2>/dev/null; then
-        if [ -x "$GOPATH/bin/$name" ]; then
-            sudo ln -sf "$GOPATH/bin/$name" "$dest"
-            success "$name installed → /usr/local/bin/$name"
-        else
-            # Binary may have different name in GOPATH
-            local found
-            found=$(find "$GOPATH/bin" -name "$name" -type f 2>/dev/null | head -1)
-            if [ -n "$found" ]; then
-                sudo ln -sf "$found" "$dest"
-                success "$name found at $found → symlinked"
-            else
-                warn "$name: installed but binary not found — check: ls $GOPATH/bin/"
-            fi
-        fi
+    $GO_BIN install "${pkg}@latest" 2>/dev/null || true
+    if [ -x "$GOPATH/bin/$name" ] || command -v "$name" &>/dev/null; then
+        success "$name installed → $GOPATH/bin/$name"
     else
-        warn "$name: go install failed — manual: $GO_BIN install ${pkg}@latest && sudo ln -sf ~/go/bin/$name /usr/local/bin/$name"
+        warn "$name: install failed (optional tool — skipping)"
     fi
 }
 
@@ -207,18 +217,16 @@ install_go_tool "github.com/hakluke/hakrawler"        "hakrawler"
 install_go_tool "github.com/jaeles-project/gospider"  "gospider"
 
 # Subdomain tools
-install_go_tool "github.com/tomnomnom/assetfinder"    "assetfinder"
-install_go_tool "github.com/d3mondev/puredns/v2"      "puredns"
-install_go_tool "github.com/hakluke/hakrevdns"        "hakrevdns"
+install_go_tool "github.com/tomnomnom/assetfinder"          "assetfinder"
+install_go_tool "github.com/d3mondev/puredns/v2"            "puredns"
+install_go_tool "github.com/hakluke/hakrevdns"              "hakrevdns"
+install_go_tool "github.com/cgboal/sonarsearch/cmd/crobat"   "crobat"
 
-# Additional subdomain tools (added for max domain coverage)
-install_go_tool "github.com/cgboal/sonarsearch/crobat" "crobat"
-install_go_tool "github.com/projectdiscovery/shuffledns/cmd/shuffledns" "shuffledns"
-
-# JS analysis
-install_go_tool "github.com/lc/subjs"                 "subjs"
-install_go_tool "github.com/003random/getJS"           "getJS"
-install_go_tool "github.com/MrEmpy/mantra"             "mantra"
+# JS analysis & secrets
+install_go_tool "github.com/lc/subjs"                       "subjs"
+install_go_tool "github.com/003random/getJS"                 "getJS"
+install_go_tool "github.com/brosck/mantra"                   "mantra"
+install_go_tool "github.com/raoufmaklouf/jsecret"           "jsecret"
 
 # github-subdomains
 install_go_tool "github.com/gwen001/github-subdomains" "github-subdomains"
@@ -232,7 +240,7 @@ install_go_tool "github.com/s0md3v/smap/cmd/smap"      "smap"
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 5 — Symlink sweep: catch anything already in GOPATH but not /usr/local/bin
 # ─────────────────────────────────────────────────────────────────────────────
-step "Symlinking all GOPATH tools to /usr/local/bin"
+step "Symlinking tools to /usr/local/bin"
 
 SYMLINKED=0
 for bin in "$GOPATH/bin"/*; do
@@ -240,10 +248,14 @@ for bin in "$GOPATH/bin"/*; do
     name=$(basename "$bin")
     dest="/usr/local/bin/$name"
     if [ ! -e "$dest" ]; then
-        sudo ln -sf "$bin" "$dest" && SYMLINKED=$((SYMLINKED + 1))
+        if [ -w /usr/local/bin ]; then
+            ln -sf "$bin" "$dest" 2>/dev/null && SYMLINKED=$((SYMLINKED + 1))
+        elif sudo -n true 2>/dev/null; then
+            sudo ln -sf "$bin" "$dest" 2>/dev/null && SYMLINKED=$((SYMLINKED + 1))
+        fi
     fi
 done
-success "Symlinked $SYMLINKED new tools"
+success "GOPATH tools ready ($SYMLINKED symlinked)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 6 — findomain (prebuilt binary, not on Go module proxy)
@@ -260,28 +272,32 @@ else
         *)       FD_URL="https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux" ;;
     esac
     info "Downloading findomain ($ARCH)..."
-    wget -q "$FD_URL" -O /tmp/findomain && \
-        sudo mv /tmp/findomain /usr/local/bin/findomain && \
-        sudo chmod +x /usr/local/bin/findomain && \
-        success "findomain installed" || \
+    if wget -q --timeout=20 "$FD_URL" -O "$GOPATH/bin/findomain" 2>/dev/null; then
+        chmod +x "$GOPATH/bin/findomain"
+        if [ -w /usr/local/bin ]; then
+            cp "$GOPATH/bin/findomain" /usr/local/bin/findomain 2>/dev/null || true
+        elif sudo -n true 2>/dev/null; then
+            sudo cp "$GOPATH/bin/findomain" /usr/local/bin/findomain 2>/dev/null || true
+        fi
+        success "findomain installed → $GOPATH/bin/findomain"
+    else
         warn "findomain download failed"
+    fi
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 7 — amass prebuilt release binary
-# FIX: NEVER use go install or apt for amass — both produce libpostal-linked
-# binaries that crash with "Error loading transliteration module, dir=(null)"
-# The official release zip contains a statically linked binary with no deps.
 # ─────────────────────────────────────────────────────────────────────────────
-step "Installing amass (prebuilt release binary — no libpostal)"
+step "Installing amass (clean release binary)"
 
 AMASS_OK=false
 if command -v amass &>/dev/null; then
-    # Test for the libpostal crash — if clean, keep it
     AMASS_TEST=$(amass -version 2>&1)
     if echo "$AMASS_TEST" | grep -qi "libpostal\|transliteration\|No such file"; then
         warn "Existing amass has libpostal crash bug — replacing..."
-        sudo rm -f "$(which amass)"
+        if sudo -n true 2>/dev/null; then
+            sudo rm -f "$(which amass)"
+        fi
     else
         success "amass already installed ($AMASS_TEST)"
         AMASS_OK=true
@@ -296,31 +312,28 @@ if [ "$AMASS_OK" = false ]; then
         aarch64) AMASS_ARCH="arm64" ;;
         *)       AMASS_ARCH="amd64" ;;
     esac
-    # NOTE: amass release zip folder is "amass_Linux_amd64" (capital L) — not linux
     AMASS_URL="https://github.com/owasp-amass/amass/releases/download/${AMASS_VER}/amass_Linux_${AMASS_ARCH}.zip"
     info "Downloading amass ${AMASS_VER} (${AMASS_ARCH})..."
-    wget -q "$AMASS_URL" -O /tmp/amass.zip 2>/dev/null
+    wget -q --timeout=30 "$AMASS_URL" -O /tmp/amass.zip 2>/dev/null
     if [ -f /tmp/amass.zip ]; then
         unzip -q /tmp/amass.zip -d /tmp/amass_extract 2>/dev/null || true
-        # Find the binary — folder name has capital Linux
         AMASS_BIN=$(find /tmp/amass_extract -name "amass" -type f 2>/dev/null | head -1)
         if [ -n "$AMASS_BIN" ]; then
-            sudo cp "$AMASS_BIN" /usr/local/bin/amass
-            sudo chmod +x /usr/local/bin/amass
-            rm -rf /tmp/amass_extract /tmp/amass.zip
-            # Verify no libpostal
-            AMASS_VER_OUT=$(amass -version 2>&1)
-            if echo "$AMASS_VER_OUT" | grep -qi "libpostal\|transliteration"; then
-                error "amass still has libpostal issue after reinstall — check manually"
-            else
-                success "amass installed cleanly: $AMASS_VER_OUT"
+            cp "$AMASS_BIN" "$GOPATH/bin/amass"
+            chmod +x "$GOPATH/bin/amass"
+            if [ -w /usr/local/bin ]; then
+                cp "$AMASS_BIN" /usr/local/bin/amass 2>/dev/null || true
+            elif sudo -n true 2>/dev/null; then
+                sudo cp "$AMASS_BIN" /usr/local/bin/amass 2>/dev/null || true
             fi
+            rm -rf /tmp/amass_extract /tmp/amass.zip
+            success "amass installed → $GOPATH/bin/amass"
         else
-            warn "amass binary not found in zip — contents: $(ls /tmp/amass_extract/ 2>/dev/null)"
+            warn "amass binary not found in zip"
             rm -rf /tmp/amass_extract /tmp/amass.zip
         fi
     else
-        warn "amass download failed — check internet connection"
+        warn "amass download failed"
     fi
 fi
 
@@ -332,18 +345,15 @@ step "Installing trufflehog"
 if command -v trufflehog &>/dev/null; then
     success "trufflehog already installed ($(trufflehog --version 2>/dev/null | head -1))"
 else
+    info "Installing trufflehog..."
     curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
-        | sudo sh -s -- -b /usr/local/bin 2>/dev/null && \
-        success "trufflehog installed" || \
+        | sh -s -- -b "$GOPATH/bin" 2>/dev/null && \
+        success "trufflehog installed → $GOPATH/bin/trufflehog" || \
         warn "trufflehog install failed"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 9 — Python tools
-# FIX: Use --break-system-packages on Kali/Debian (externally-managed-environment)
-#      paramspider is NOT on PyPI — must install from GitHub source
-#      gauplus is NOT on PyPI — use go install (done above in Step 4)
-#      waymore and jsecret ARE on PyPI
 # ─────────────────────────────────────────────────────────────────────────────
 step "Installing Python-based tools"
 
@@ -361,16 +371,49 @@ pip_install() {
 }
 
 pip_install "waymore"
-pip_install "jsecret"
+pip_install "wafw00f"
+pip_install "dirsearch"
+pip_install "s3scanner"
+
+# cloud_enum — install from GitHub
+step "Installing cloud_enum"
+if command -v cloud_enum &>/dev/null; then
+    success "cloud_enum already installed"
+else
+    info "Cloning and installing cloud_enum..."
+    TMP_CE=$(mktemp -d)
+    git clone -q --depth=1 https://github.com/initstring/cloud_enum "$TMP_CE/cloud_enum" 2>/dev/null && \
+        pip3 install "$TMP_CE/cloud_enum" --break-system-packages --quiet 2>/dev/null && \
+        success "cloud_enum installed" || \
+        warn "cloud_enum install failed"
+    rm -rf "$TMP_CE"
+fi
+
+# corsy — install from GitHub
+step "Installing corsy"
+if command -v corsy &>/dev/null; then
+    success "corsy already installed"
+else
+    info "Cloning and installing corsy..."
+    TMP_COR=$(mktemp -d)
+    git clone -q --depth=1 https://github.com/s0md3v/Corsy "$TMP_COR/Corsy" 2>/dev/null && \
+        mkdir -p "$HOME/.local/share/Corsy" "$HOME/.local/bin" && \
+        cp -r "$TMP_COR/Corsy"/* "$HOME/.local/share/Corsy/" 2>/dev/null && \
+        ln -sf "$HOME/.local/share/Corsy/corsy.py" "$HOME/.local/bin/corsy" && \
+        chmod +x "$HOME/.local/bin/corsy" && \
+        success "corsy installed" || \
+        warn "corsy install failed"
+    rm -rf "$TMP_COR"
+fi
 
 # paramspider — must install from GitHub (not on PyPI)
-step "Installing paramspider (from GitHub source)"
+step "Installing paramspider"
 if command -v paramspider &>/dev/null; then
     success "paramspider already installed"
 else
     info "Cloning and installing paramspider..."
     TMP_PS=$(mktemp -d)
-    git clone -q https://github.com/devanshbatham/ParamSpider "$TMP_PS/ParamSpider" 2>/dev/null && \
+    git clone -q --depth=1 https://github.com/devanshbatham/ParamSpider "$TMP_PS/ParamSpider" 2>/dev/null && \
         pip3 install "$TMP_PS/ParamSpider" --break-system-packages --quiet 2>/dev/null && \
         success "paramspider installed" || \
         warn "paramspider install failed"
@@ -382,19 +425,83 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 step "Updating nuclei templates"
 if command -v nuclei &>/dev/null; then
-    nuclei -update-templates -silent 2>/dev/null && \
+    timeout 30s nuclei -update-templates -silent 2>/dev/null && \
         success "Nuclei templates updated" || \
-        warn "Nuclei template update failed — run: nuclei -update-templates"
+        warn "Nuclei template update skipped/timed out"
 else
     warn "nuclei not found — skipping"
 fi
 
 step "Downloading DNS resolvers"
 mkdir -p "$HOME/.config/reconx"
-wget -q "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt" \
-    -O "$HOME/.config/reconx/resolvers.txt" && \
-    success "Resolvers → $HOME/.config/reconx/resolvers.txt" || \
-    warn "Resolver download failed"
+if [ -s "$HOME/.config/reconx/resolvers.txt" ]; then
+    success "Resolvers already present ($HOME/.config/reconx/resolvers.txt)"
+else
+    wget -q --timeout=15 "https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt" \
+        -O "$HOME/.config/reconx/resolvers.txt" && \
+        success "Resolvers → $HOME/.config/reconx/resolvers.txt" || \
+        warn "Resolver download failed"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STEP 10b — Additional tools: tlsx, feroxbuster, massdns
+# ─────────────────────────────────────────────────────────────────────────────
+step "Installing additional tools (tlsx, feroxbuster, massdns)"
+
+# tlsx — TLS certificate info (ProjectDiscovery)
+install_go_tool "github.com/projectdiscovery/tlsx/cmd/tlsx" "tlsx"
+
+# feroxbuster — recursive directory fuzzer (Rust/cargo)
+if command -v feroxbuster &>/dev/null; then
+    success "feroxbuster already installed"
+elif command -v cargo &>/dev/null; then
+    info "Installing feroxbuster via cargo..."
+    cargo install feroxbuster --quiet 2>/dev/null && \
+        success "feroxbuster installed" || \
+        warn "feroxbuster cargo install failed — try: cargo install feroxbuster"
+else
+    # Fallback: prebuilt binary from GitHub releases
+    info "Downloading feroxbuster..."
+    FEROX_URL="https://github.com/epi052/feroxbuster/releases/latest/download/x86_64-linux-feroxbuster.zip"
+    if wget -q --timeout=20 "$FEROX_URL" -O /tmp/ferox.zip 2>/dev/null && \
+        unzip -q /tmp/ferox.zip feroxbuster -d /tmp 2>/dev/null; then
+        mv /tmp/feroxbuster "$GOPATH/bin/feroxbuster"
+        chmod +x "$GOPATH/bin/feroxbuster"
+        if [ -w /usr/local/bin ]; then
+            cp "$GOPATH/bin/feroxbuster" /usr/local/bin/feroxbuster 2>/dev/null || true
+        elif sudo -n true 2>/dev/null; then
+            sudo cp "$GOPATH/bin/feroxbuster" /usr/local/bin/feroxbuster 2>/dev/null || true
+        fi
+        rm -f /tmp/ferox.zip
+        success "feroxbuster installed → $GOPATH/bin/feroxbuster"
+    else
+        warn "feroxbuster install failed"
+    fi
+fi
+
+# massdns — mass DNS resolver (apt or build from source)
+if command -v massdns &>/dev/null || [ -x "$GOPATH/bin/massdns" ]; then
+    success "massdns already installed"
+elif sudo -n true 2>/dev/null && sudo apt-get install -y massdns --quiet &>/dev/null 2>&1; then
+    success "massdns installed via apt"
+else
+    info "Building massdns from source..."
+    TMP_MD=$(mktemp -d)
+    if git clone -q --depth=1 https://github.com/blechschmidt/massdns "$TMP_MD/massdns" 2>/dev/null && \
+        make -C "$TMP_MD/massdns" -s 2>/dev/null; then
+        cp "$TMP_MD/massdns/bin/massdns" "$GOPATH/bin/massdns"
+        chmod +x "$GOPATH/bin/massdns"
+        if [ -w /usr/local/bin ]; then
+            cp "$GOPATH/bin/massdns" /usr/local/bin/massdns 2>/dev/null || true
+        elif sudo -n true 2>/dev/null; then
+            sudo cp "$GOPATH/bin/massdns" /usr/local/bin/massdns 2>/dev/null || true
+        fi
+        success "massdns built from source → $GOPATH/bin/massdns"
+    else
+        warn "massdns build failed (optional tool — skipping)"
+    fi
+    rm -rf "$TMP_MD"
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 11 — Build and install reconx binary
@@ -404,10 +511,14 @@ step "Building ReconX"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-if $GO_BIN build -o /tmp/reconx_new ./cmd/reconx/ 2>&1; then
-    sudo mv /tmp/reconx_new /usr/local/bin/reconx
-    sudo chmod +x /usr/local/bin/reconx
-    success "reconx built and installed → /usr/local/bin/reconx"
+if $GO_BIN build -o "$SCRIPT_DIR/reconx" ./cmd/reconx/ 2>&1; then
+    cp "$SCRIPT_DIR/reconx" "$GOPATH/bin/reconx" 2>/dev/null || true
+    if [ -w /usr/local/bin ]; then
+        cp "$SCRIPT_DIR/reconx" /usr/local/bin/reconx 2>/dev/null || true
+    elif sudo -n true 2>/dev/null; then
+        sudo cp "$SCRIPT_DIR/reconx" /usr/local/bin/reconx 2>/dev/null || true
+    fi
+    success "reconx built and installed → $GOPATH/bin/reconx"
 else
     error "reconx build failed"
     warn "Manual fix: cd $SCRIPT_DIR && go build -o reconx ./cmd/reconx/"
@@ -416,16 +527,20 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 12 — Final symlink sweep (catch anything missed above)
 # ─────────────────────────────────────────────────────────────────────────────
-step "Final symlink sweep"
+step "Final check"
 for bin in "$GOPATH/bin"/*; do
     [ -x "$bin" ] || continue
     name=$(basename "$bin")
     dest="/usr/local/bin/$name"
     if [ ! -e "$dest" ]; then
-        sudo ln -sf "$bin" "$dest"
+        if [ -w /usr/local/bin ]; then
+            ln -sf "$bin" "$dest" 2>/dev/null || true
+        elif sudo -n true 2>/dev/null; then
+            sudo ln -sf "$bin" "$dest" 2>/dev/null || true
+        fi
     fi
 done
-success "All GOPATH tools symlinked to /usr/local/bin"
+success "All Go tools ready in PATH ($GOPATH/bin)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 13 — Verification report
@@ -437,6 +552,7 @@ ALL_TOOLS=(
     crobat shuffledns
     httpx curl naabu
     waybackurls waymore gau gauplus katana hakrawler gospider paramspider
+    s3scanner cloud_enum corsy
     mantra jsecret subjs trufflehog
     nuclei
     reconx

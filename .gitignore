@@ -2,23 +2,23 @@
 dist/
 web/.next/
 web/node_modules/
-
-# Go
 reconx
-
-# IDE
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
 
 # Scan output
 output/
 scans/
+reconx-output/
+test-*/
+results/
+*.log
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
 
 # Env
 .env

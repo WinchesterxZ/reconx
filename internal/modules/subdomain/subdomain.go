@@ -50,6 +50,14 @@ func (m *Module) Run(ctx context.Context) error {
                 }
         })
 
+        // ── Wildcard detection (MUST run before any bruteforce) ─────────────────────
+        // If a domain has wildcard DNS, bruteforce results will be flooded with
+        // false positives (every word resolves). We detect this early and warn
+        // so the user can decide whether to continue or add --skip-bruteforce.
+        for _, domain := range m.cfg.Target.Domains {
+                m.runWildcardCheck(ctx, domain, board)
+        }
+
         var wg sync.WaitGroup
         for _, domain := range m.cfg.Target.Domains {
                 domain := domain
@@ -82,6 +90,13 @@ func (m *Module) Run(ctx context.Context) error {
 
         total := len(m.store.GetSubdomains())
         m.log.PhaseComplete("Subdomain Enumeration", total, time.Since(start))
+
+        // ── massdns resolve (optional, runs if massdns binary is available) ────────
+        // Much faster than puredns/dnsx for very large subdomain sets (10k+).
+        // Results are merged back into store so later phases see everything.
+        if total > 5000 && runner.IsAvailable("massdns") {
+                m.runMassdns(ctx, m.store.GetSubdomains())
+        }
 
         if err := store.SaveRaw(m.outDir+"/subdomains.txt", m.store.GetSubdomains()); err != nil {
                 m.log.Warn("Failed to save subdomains.txt: %v", err)
@@ -526,4 +541,136 @@ func findResolvers(cfg *config.Config) string {
                 }
         }
         return ""
+}
+
+// ── Wildcard detection ────────────────────────────────────────────────────────────────
+
+// runWildcardCheck probes whether a domain has wildcard DNS configured.
+// Strategy:
+//  1. Resolve a random non-existent hostname with dig.
+//     If it resolves to any IP → wildcard present.
+//  2. If puredns is available, use --wildcard-tests 50 as a second pass.
+//
+// Wildcard detection is a WARN only — it does not stop the scan.
+// The user is informed so they can interpret brute-force results carefully.
+func (m *Module) runWildcardCheck(ctx context.Context, domain string, board *logger.ProgressBoard) {
+        board.Register("wildcard-check", domain)
+
+        // Generate a random label that almost certainly doesn't exist
+        rndLabel := fmt.Sprintf("reconx-wc-test-77293819.%s", domain)
+
+        // First: use dig (universally available on Linux/macOS)
+        detected := false
+        if runner.IsAvailable("dig") {
+                digCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+                defer cancel()
+                r := runner.Run(digCtx, "dig", []string{"+short", rndLabel})
+                if r.Err == nil && len(r.Lines) > 0 {
+                        for _, line := range r.Lines {
+                                line = strings.TrimSpace(line)
+                                if line != "" && !strings.HasPrefix(line, ";;") {
+                                        detected = true
+                                        break
+                                }
+                        }
+                }
+        }
+
+        // Second pass: puredns --wildcard-tests if available
+        if !detected && runner.IsAvailable("puredns") {
+                resolvers := findResolvers(m.cfg)
+                pureArgs := []string{"bruteforce", "/dev/null", domain, "--wildcard-tests", "50"}
+                if resolvers != "" {
+                        pureArgs = append(pureArgs, "-r", resolvers)
+                }
+                pureCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+                defer cancel()
+                r := runner.Run(pureCtx, "puredns", pureArgs)
+                // puredns exits non-zero when wildcard is detected — check stderr
+                if r.Err != nil && len(r.Stderr) > 0 {
+                        for _, line := range r.Stderr {
+                                if strings.Contains(strings.ToLower(line), "wildcard") {
+                                        detected = true
+                                        break
+                                }
+                        }
+                }
+        }
+
+        if detected {
+                board.Fail("wildcard-check", fmt.Sprintf(
+                        "WILDCARD DNS detected for %s — brute-force may have false positives", domain))
+                m.log.Warn("Wildcard DNS detected for %s — brute-force results will need additional filtering.", domain)
+                m.log.Warn("puredns/dnsx will attempt to filter wildcards automatically using their built-in wildcard filter.")
+        } else {
+                board.Done("wildcard-check", 0)
+                m.log.Debug("No wildcard DNS detected for %s", domain)
+        }
+}
+
+// ── Massdns (large-scale resolution) ────────────────────────────────────────────────────
+
+// runMassdns resolves a large list of subdomains using massdns, which is
+// significantly faster than puredns/dnsx for 10k+ entries.
+// Results are merged back into the store as additional subdomains.
+func (m *Module) runMassdns(ctx context.Context, domains []string) {
+        if len(domains) == 0 {
+                return
+        }
+        tcfg := m.cfg.Tools["massdns"]
+        path := "massdns"
+        if tcfg.Path != "" {
+                path = tcfg.Path
+        }
+        if !runner.IsAvailable(path) {
+                m.log.Debug("massdns not found — skipping mass resolution (puredns already ran)")
+                return
+        }
+
+        resolvers := findResolvers(m.cfg)
+        if resolvers == "" {
+                m.log.Debug("massdns: no resolvers file found — skipping")
+                return
+        }
+
+        // Write domains to a temp file
+        tmpFile := m.outDir + "/.massdns_input.tmp"
+        if err := store.SaveRaw(tmpFile, domains); err != nil {
+                m.log.Warn("massdns: could not write input file: %v", err)
+                return
+        }
+        defer os.Remove(tmpFile)
+
+        outFile := m.outDir + "/massdns_raw.txt"
+        args := []string{"-r", resolvers, "-t", "A", "-o", "S", "-w", outFile, tmpFile}
+
+        m.log.Tool("massdns", fmt.Sprintf("%d subdomains → %s", len(domains), outFile))
+        m.log.ToolCmd("massdns", args, "")
+
+        start := time.Now()
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 30 * time.Minute
+        }
+        r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
+        if r.Err != nil && len(r.Lines) == 0 {
+                m.log.ToolError("massdns", fmt.Errorf(r.DiagString()), r.Stderr)
+                return
+        }
+
+        // Parse massdns simple output (format: "hostname A ip")
+        var newSubs []string
+        for _, line := range r.Lines {
+                parts := strings.Fields(line)
+                if len(parts) >= 3 && strings.EqualFold(parts[1], "A") {
+                        sub := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parts[0])), ".")
+                        if isValidDomain(sub) {
+                                newSubs = append(newSubs, sub)
+                        }
+                }
+        }
+
+        added := m.store.AddSubdomainsFromSource(m.scope.FilterList(newSubs), "massdns")
+        m.log.ToolDone("massdns", added, time.Since(start))
+        m.log.Debug("massdns: %d lines parsed, %d new subdomains added", len(r.Lines), added)
 }

@@ -13,7 +13,11 @@ import (
 
         "github.com/reconx/reconx/internal/config"
         "github.com/reconx/reconx/internal/modules/alive"
+        "github.com/reconx/reconx/internal/modules/cloud"
+        "github.com/reconx/reconx/internal/modules/cors"
+        "github.com/reconx/reconx/internal/modules/dirfuzz"
         "github.com/reconx/reconx/internal/modules/js"
+        "github.com/reconx/reconx/internal/modules/params"
         "github.com/reconx/reconx/internal/modules/portscan"
         "github.com/reconx/reconx/internal/modules/report"
         "github.com/reconx/reconx/internal/modules/subdomain"
@@ -292,12 +296,13 @@ func (p *Pipeline) Run(ctx context.Context) error {
         // In resume mode, skip phases that already have output files.
         // Each phase writes a marker file when it completes successfully,
         // so we can reliably detect what to skip on --resume.
-        isResume := p.cfg.ResumeDir != ""
-        hasSubdomains := fileExists(filepath.Join(p.outDir, "subdomains.txt"))
-        hasAlive     := fileExists(filepath.Join(p.outDir, "alive.txt"))
-        hasPorts     := fileExists(filepath.Join(p.outDir, "ports.txt"))
-        hasURLs      := fileExists(filepath.Join(p.outDir, "urls.txt"))
-        hasJS        := fileExists(filepath.Join(p.outDir, "js_files.txt"))
+        	isResume := p.cfg.ResumeDir != ""
+	hasSubdomains := fileHasContent(filepath.Join(p.outDir, "subdomains.txt"))
+	hasAlive     := fileHasContent(filepath.Join(p.outDir, "alive.txt"))
+	hasPorts     := fileHasContent(filepath.Join(p.outDir, "ports.txt"))
+	hasURLs      := fileHasContent(filepath.Join(p.outDir, "urls.txt"))
+	hasJS        := fileHasContent(filepath.Join(p.outDir, "js_files.txt"))
+	hasDirs      := fileHasContent(filepath.Join(p.outDir, "dirs", "all_dirs.txt"))
 
         if isResume {
                 stats := p.store.Stats()
@@ -305,81 +310,89 @@ func (p *Pipeline) Run(ctx context.Context) error {
                         stats["subdomains"], stats["live_hosts"], stats["open_ports"], stats["urls"])
         }
 
-        // ── PHASE 1: Subdomain Enumeration ──────────────────────────────────────
-        if p.cfg.Phases.SubdomainEnum && !(isResume && hasSubdomains) {
-                mod := subdomain.New(p.cfg, p.store, p.scope, p.log, p.outDir)
-                if err := mod.Run(ctx); err != nil {
-                        p.log.Error("Subdomain phase: %v", err)
-                }
-                p.printInterim("After subdomain enum")
-        }
+	// ── PHASE 1: Subdomain Enumeration ──────────────────────────────────────
+	if p.cfg.Phases.SubdomainEnum && !(isResume && hasSubdomains) && ctx.Err() == nil {
+		mod := subdomain.New(p.cfg, p.store, p.scope, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Subdomain phase: %v", err)
+		}
+		p.printInterim("After subdomain enum")
+	}
 
-        // ── PHASE 2: Alive Host Detection ───────────────────────────────────────
-        if p.cfg.Phases.AliveCheck && !(isResume && hasAlive) {
-                mod := alive.New(p.cfg, p.store, p.log, p.outDir)
-                if err := mod.Run(ctx); err != nil {
-                        p.log.Error("Alive check phase: %v", err)
-                }
-                p.printInterim("After alive check")
-        }
+	// ── PHASE 2: Alive Host Detection ───────────────────────────────────────
+	if p.cfg.Phases.AliveCheck && !(isResume && hasAlive) && ctx.Err() == nil {
+		mod := alive.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Alive check phase: %v", err)
+		}
+		p.printInterim("After alive check")
+	}
 
-        // ── PHASE 3: Port Scanning ───────────────────────────────────────────────
-        if p.cfg.Phases.PortScan && !(isResume && hasPorts) {
-                mod := portscan.New(p.cfg, p.store, p.log, p.outDir)
-                if err := mod.Run(ctx); err != nil {
-                        p.log.Error("Port scan phase: %v", err)
-                }
-        }
+	// ── PHASE 3: Port Scanning ───────────────────────────────────────────────
+	if p.cfg.Phases.PortScan && !(isResume && hasPorts) && ctx.Err() == nil {
+		mod := portscan.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Port scan phase: %v", err)
+		}
+	}
 
-        // ── PHASE 4: URL Discovery ───────────────────────────────────────────────
-        if p.cfg.Phases.URLDiscovery && !(isResume && hasURLs) {
-                mod := urls.New(p.cfg, p.store, p.log, p.outDir)
-                if err := mod.Run(ctx); err != nil {
-                        p.log.Error("URL discovery phase: %v", err)
-                }
-                p.printInterim("After URL discovery")
-        }
+	// ── PHASE 4: URL Discovery ───────────────────────────────────────────────
+	if p.cfg.Phases.URLDiscovery && !(isResume && hasURLs) && ctx.Err() == nil {
+		mod := urls.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("URL discovery phase: %v", err)
+		}
+		p.printInterim("After URL discovery")
+	}
 
-        // ── PHASE 5: JS & Secret Analysis ───────────────────────────────────────
-        // Use a fresh context for JS/Vuln so they always run even if URL tools
-        // left orphan processes that put the parent context in a bad state.
-        // The fresh context is still cancelled on Ctrl+C via the signal handler.
-        if p.cfg.Phases.JSAnalysis && !(isResume && hasJS) {
-                jsCtx, jsCancel := context.WithCancel(context.Background())
-                stopWait := make(chan struct{})
-                go func() {
-                        select {
-                        case <-ctx.Done():
-                                jsCancel()
-                        case <-stopWait:
-                        }
-                }()
-                mod := js.New(p.cfg, p.store, p.log, p.outDir)
-                if err := mod.Run(jsCtx); err != nil && err != context.Canceled {
-                        p.log.Error("JS analysis phase: %v", err)
-                }
-                jsCancel()
-                close(stopWait)
-        }
+	// ── PHASE 4.7: Directory & Content Fuzzing (Opt-in) ────────────────────
+	if p.cfg.Phases.DirFuzz && !(isResume && hasDirs) && ctx.Err() == nil {
+		mod := dirfuzz.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Dir fuzz phase: %v", err)
+		}
+		p.printInterim("After dir fuzzing")
+	}
 
-        // ── PHASE 6: Vulnerability Scanning ─────────────────────────────────────
-        if p.cfg.Phases.VulnScan {
-                vulnCtx, vulnCancel := context.WithCancel(context.Background())
-                stopWait := make(chan struct{})
-                go func() {
-                        select {
-                        case <-ctx.Done():
-                                vulnCancel()
-                        case <-stopWait:
-                        }
-                }()
-                mod := vuln.New(p.cfg, p.store, p.log, p.outDir)
-                if err := mod.Run(vulnCtx); err != nil && err != context.Canceled {
-                        p.log.Error("Vuln scan phase: %v", err)
-                }
-                vulnCancel()
-                close(stopWait)
-        }
+	// ── PHASE 4.8: Hidden Parameter Discovery ──────────────────────────────
+	if p.cfg.Phases.Params && ctx.Err() == nil {
+		mod := params.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Param discovery phase: %v", err)
+		}
+	}
+
+	// ── PHASE 4.9: Cloud & S3 Bucket Enumeration ───────────────────────────
+	if p.cfg.Phases.CloudEnum && ctx.Err() == nil {
+		mod := cloud.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Cloud enum phase: %v", err)
+		}
+	}
+
+	// ── PHASE 4.10: CORS Misconfiguration Scan ─────────────────────────────
+	if p.cfg.Phases.CORS && ctx.Err() == nil {
+		mod := cors.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("CORS scan phase: %v", err)
+		}
+	}
+
+	// ── PHASE 5: JS & Secret Analysis ───────────────────────────────────────
+	if p.cfg.Phases.JSAnalysis && !(isResume && hasJS) && ctx.Err() == nil {
+		mod := js.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("JS analysis phase: %v", err)
+		}
+	}
+
+	// ── PHASE 6: Vulnerability Scanning ─────────────────────────────────────
+	if p.cfg.Phases.VulnScan && ctx.Err() == nil {
+		mod := vuln.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Vuln scan phase: %v", err)
+		}
+	}
 
         // ── PHASE 7: Report ──────────────────────────────────────────────────────
         if p.cfg.Phases.Report {
@@ -410,6 +423,14 @@ func fileExists(path string) bool {
         return err == nil
 }
 
+func fileHasContent(path string) bool {
+        fi, err := os.Stat(path)
+        if err != nil {
+                return false
+        }
+        return fi.Size() > 0
+}
+
 func (p *Pipeline) printInterim(label string) {
         stats := p.store.Stats()
         p.log.Info("[%s] subdomains:%d  live:%d  urls:%d  js:%d  findings:%d  secrets:%d",
@@ -427,7 +448,11 @@ func (p *Pipeline) printSummary(dur time.Duration) {
         p.log.Stat("Live hosts",           stats["live_hosts"])
         p.log.Stat("Open ports",           stats["open_ports"])
         p.log.Stat("URLs discovered",      stats["urls"])
+        p.log.Stat("Directory findings",   stats["dir_results"])
+        p.log.Stat("Parameters found",     stats["param_results"])
         p.log.Stat("JS files",             stats["js_files"])
+        p.log.Stat("Cloud assets",         stats["cloud_assets"])
+        p.log.Stat("CORS findings",        stats["cors_results"])
         p.log.Stat("Vulnerabilities",      stats["findings"])
         p.log.Stat("Secrets found",        stats["secrets"])
         p.log.Separator()
@@ -445,10 +470,13 @@ func (p *Pipeline) checkTools() {
                 label string
                 tools []string
         }{
-                {"Subdomain",  []string{"subfinder", "assetfinder", "amass", "findomain", "chaos", "puredns", "dnsx", "github-subdomains", "crobat", "shuffledns"}},
-                {"Alive",      []string{"httpx", "curl"}},
+                {"Subdomain",  []string{"subfinder", "assetfinder", "amass", "findomain", "chaos", "puredns", "dnsx", "github-subdomains", "crobat", "shuffledns", "massdns"}},
+                {"Alive",      []string{"httpx", "curl", "wafw00f", "tlsx"}},
                 {"Ports",      []string{"naabu"}},
                 {"URLs",       []string{"waybackurls", "waymore", "gau", "gauplus", "katana", "hakrawler", "gospider", "paramspider"}},
+                {"DirFuzz",    []string{"feroxbuster", "ffuf", "dirsearch"}},
+                {"Params",     []string{"arjun"}},
+                {"Cloud/CORS", []string{"s3scanner", "cloud_enum", "corsy"}},
                 {"JS/Secrets", []string{"mantra", "jsecret", "subjs", "trufflehog"}},
                 {"Vuln",       []string{"nuclei"}},
         }

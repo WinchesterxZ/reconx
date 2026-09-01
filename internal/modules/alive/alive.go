@@ -1,19 +1,27 @@
 package alive
 
 import (
-        "context"
-        "fmt"
-        "strconv"
-        "strings"
-        "sync"
-        "time"
+	"context"
+	"fmt"
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 
-        "github.com/reconx/reconx/internal/config"
-        "github.com/reconx/reconx/internal/store"
-        "github.com/reconx/reconx/pkg/logger"
-        "github.com/reconx/reconx/pkg/runner"
-        "github.com/reconx/reconx/pkg/util"
+	"github.com/reconx/reconx/internal/config"
+	"github.com/reconx/reconx/internal/store"
+	"github.com/reconx/reconx/pkg/logger"
+	"github.com/reconx/reconx/pkg/runner"
+	"github.com/reconx/reconx/pkg/util"
 )
+
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+func stripAnsi(s string) string {
+	return ansiPattern.ReplaceAllString(s, "")
+}
 
 // Module probes discovered subdomains for live HTTP/S hosts
 type Module struct {
@@ -30,32 +38,56 @@ func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string)
 
 // Run probes all discovered subdomains
 func (m *Module) Run(ctx context.Context) error {
-        m.log.Phase("Alive Host Detection",
-                "Probing all subdomains — status code, title, server, tech fingerprint")
+	m.log.Phase("Alive Host Detection",
+		"Probing all subdomains — status code, title, server, tech fingerprint")
 
-        subs := m.store.GetSubdomains()
-        if len(subs) == 0 {
-                m.log.Warn("No subdomains to probe — subdomain phase may have failed")
-                return nil
-        }
-        m.log.Info("Probing %d subdomains with httpx...", len(subs))
+	subs := m.store.GetSubdomains()
+	if len(subs) == 0 {
+		// If subdomain enum was skipped (single target mode / --skip-subs), use Target.Domains
+		if len(m.cfg.Target.Domains) > 0 {
+			subs = m.cfg.Target.Domains
+			m.store.AddSubdomains(subs)
+			m.log.Info("Single target mode / Subdomains skipped: Probing %d target domains directly...", len(subs))
+		} else {
+			m.log.Warn("No subdomains or target domains to probe — subdomain phase may have failed")
+			return nil
+		}
+	} else {
+		m.log.Info("Probing %d subdomains with httpx...", len(subs))
+	}
 
-        tcfg := m.cfg.Tools["httpx"]
-        httpxPath := "httpx"
-        if tcfg.Path != "" {
-                httpxPath = tcfg.Path
-        }
+	tcfg := m.cfg.Tools["httpx"]
+	httpxPath := "httpx"
+	if tcfg.Path != "" {
+		httpxPath = tcfg.Path
+	}
 
-        if !runner.IsAvailable(httpxPath) {
-                m.log.ToolSkipped("httpx", fmt.Sprintf("binary '%s' not found in PATH — falling back to curl", httpxPath))
-                return m.runCurlFallback(ctx, subs)
-        }
+	var err error
+	if !runner.IsAvailable(httpxPath) {
+		m.log.ToolSkipped("httpx", fmt.Sprintf("binary '%s' not found in PATH — falling back to curl", httpxPath))
+		err = m.runCurlFallback(ctx, subs)
+	} else {
+		// Show httpx version for debugging
+		ver := runner.Version(httpxPath)
+		m.log.Debug("httpx version: %s (path: %s)", ver, runner.WhichPath(httpxPath))
+		err = m.runHttpx(ctx, subs, httpxPath, tcfg)
+		if len(m.store.GetHosts()) == 0 && len(subs) > 0 {
+			m.log.Info("httpx returned 0 live hosts — attempting built-in curl probe fallback...")
+			_ = m.runCurlFallback(ctx, subs)
+		}
+	}
 
-        // Show httpx version for debugging
-        ver := runner.Version(httpxPath)
-        m.log.Debug("httpx version: %s (path: %s)", ver, runner.WhichPath(httpxPath))
+	// ── WAF Detection (after httpx, before fuzzing/vuln scan) ───────────────
+	// Knowing whether a WAF is present lets us tune threads/timing in later
+	// phases to avoid getting blocked or rate-limited.
+	m.runWAFDetection(ctx)
 
-        return m.runHttpx(ctx, subs, httpxPath, tcfg)
+	// ── TLS / Certificate info ─────────────────────────────────────────────
+	// SANs from TLS certs often reveal subdomains not found by passive tools.
+	// Any new SANs discovered here are added back to the subdomain store.
+	m.runTLSX(ctx)
+
+	return err
 }
 
 func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg config.ToolConfig) error {
@@ -75,6 +107,7 @@ func (m *Module) runHttpx(ctx context.Context, subs []string, path string, tcfg 
                 "-web-server",
                 "-content-length",
                 "-tech-detect",
+                "-favicon",
         }
 
         m.log.Tool("httpx", fmt.Sprintf("%d subdomains", len(subs)))
@@ -294,15 +327,24 @@ func parseHTTPXLine(line string) *store.Host {
 
         host.Title  = firstOf(line, "title", "Title", "page-title")
         host.Server = firstOf(line, "webserver", "web-server", "server", "Server")
-        // httpx JSON: "host" is the input hostname (same as Domain), "a" is the
-        // first A-record IP, "ip" is the resolved IP. We want an IP here, not a
-        // repeat of the hostname.
-        host.IP     = firstOf(line, "a", "ip", "IP")
+        // Clean IP address
+        rawIP := firstOf(line, "a", "ip", "IP")
+        rawIP = strings.Trim(rawIP, `[]"' `)
+        if idx := strings.Index(rawIP, ","); idx > 0 {
+                rawIP = strings.Trim(rawIP[:idx], `[]"' `)
+        }
+        host.IP = rawIP
 
         // Content length
         cl := firstOf(line, "content-length", "content_length")
         if cl != "" {
                 host.Meta["content-length"] = cl
+        }
+
+        // Favicon hash (mmh3 or md5)
+        fav := firstOf(line, "favicon", "favicon-hash", "favicon_hash", "favicon_md5", "fav_md5")
+        if fav != "" {
+                host.Meta["favicon_hash"] = fav
         }
 
         // Tech stack array
@@ -357,4 +399,167 @@ func firstOf(s string, keys ...string) string {
                 }
         }
         return ""
+}
+
+// ── WAF Detection ────────────────────────────────────────────────────────────────────────
+
+// runWAFDetection runs wafw00f against all live hosts to identify WAF presence.
+// Results are stored in alive/waf_results.txt and logged with a prominent warning
+// if any WAFs are detected — this helps tune threading/rate in later fuzzing phases.
+func (m *Module) runWAFDetection(ctx context.Context) {
+        tcfg := m.cfg.Tools["wafw00f"]
+        path := "wafw00f"
+        if tcfg.Path != "" {
+                path = tcfg.Path
+        }
+
+        if !runner.IsAvailable(path) {
+                m.log.ToolSkipped("wafw00f", "not found — install: pip3 install wafw00f")
+                return
+        }
+
+        aliveFile := m.outDir + "/alive.txt"
+        if _, err := os.Stat(aliveFile); os.IsNotExist(err) {
+                m.log.Debug("wafw00f: alive.txt not found, skipping")
+                return
+        }
+
+        outFile := m.outDir + "/waf_results.txt"
+        args := []string{"-i", aliveFile, "-o", outFile, "-a"}
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 5 * time.Minute
+        }
+
+        m.log.Tool("wafw00f", "detecting WAF on all live hosts")
+        m.log.ToolCmd("wafw00f", args, "")
+        start := time.Now()
+
+        r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
+
+        wafCount := 0
+        for _, line := range r.Lines {
+                line = strings.TrimSpace(line)
+                if line == "" {
+                        continue
+                }
+                // wafw00f output: "The site http://... is behind <WAF> WAF."
+                // or:             "No WAF detected"
+                detected := !strings.Contains(strings.ToLower(line), "no waf") &&
+                        !strings.Contains(strings.ToLower(line), "generic") &&
+                        strings.Contains(strings.ToLower(line), "behind")
+
+                if detected {
+                        wafCount++
+                        // Extract host and WAF name for store
+                        host := ""
+                        waf := "unknown"
+                        if idx := strings.Index(line, "http"); idx >= 0 {
+                                rest := line[idx:]
+                                if end := strings.IndexAny(rest, " )"); end > 0 {
+                                        host = rest[:end]
+                                }
+                        }
+                        if idx := strings.Index(strings.ToLower(line), "behind "); idx >= 0 {
+                                rest := line[idx+7:]
+                                if end := strings.IndexAny(rest, " ."); end > 0 {
+                                        waf = rest[:end]
+                                }
+                        }
+                        host = strings.TrimSpace(stripAnsi(host))
+                        waf = strings.TrimSpace(stripAnsi(waf))
+                        m.store.AddWAFResult(&store.WAFResult{Host: host, WAF: waf, Detected: true})
+                        m.log.Warn("WAF detected: %s — %s", host, waf)
+                }
+        }
+
+        if r.Err != nil && wafCount == 0 {
+                m.log.ToolError("wafw00f", fmt.Errorf(r.DiagString()), r.Stderr)
+        } else {
+                m.log.ToolDone("wafw00f", wafCount, time.Since(start))
+                if wafCount > 0 {
+                        m.log.Warn("⚠  %d WAF(s) detected — consider reducing thread counts in dir fuzzing & vuln scan", wafCount)
+                } else {
+                        m.log.Info("wafw00f: no WAFs detected")
+                }
+        }
+}
+
+// ── TLS / Certificate info ─────────────────────────────────────────────────────────────────────
+
+// runTLSX gathers TLS certificate information (SANs, CN) from live HTTPS hosts.
+// This is a complementary source to crt.sh — it directly queries the servers
+// rather than relying on logged certificates, catching recently-issued certs
+// that haven’t propagated to certificate transparency logs yet.
+//
+// Any new SAN domains found here are added back to store.Subdomains so they
+// can be picked up by the alive check in the next run (or in a resume).
+func (m *Module) runTLSX(ctx context.Context) {
+        tcfg := m.cfg.Tools["tlsx"]
+        path := "tlsx"
+        if tcfg.Path != "" {
+                path = tcfg.Path
+        }
+
+        if !runner.IsAvailable(path) {
+                m.log.ToolSkipped("tlsx", "not found — install: go install github.com/projectdiscovery/tlsx/cmd/tlsx@latest")
+                return
+        }
+
+        aliveFile := m.outDir + "/alive.txt"
+        if _, err := os.Stat(aliveFile); os.IsNotExist(err) {
+                m.log.Debug("tlsx: alive.txt not found, skipping")
+                return
+        }
+
+        outFile := m.outDir + "/tls_info.txt"
+        args := []string{"-l", aliveFile, "-san", "-cn", "-silent", "-o", outFile}
+        // Merge any extra flags from config
+        args = append(args, tcfg.Flags...)
+
+        timeout := time.Duration(tcfg.Timeout) * time.Second
+        if timeout == 0 {
+                timeout = 5 * time.Minute
+        }
+
+        m.log.Tool("tlsx", "extracting TLS certificate SANs and CNs")
+        m.log.ToolCmd("tlsx", args, "")
+        start := time.Now()
+
+        newSubs := 0
+        r := runner.Run(ctx, path, args,
+                runner.WithTimeout(timeout),
+                runner.WithLineCallback(func(line string) {
+                        line = strings.TrimSpace(line)
+                        if line == "" || strings.HasPrefix(line, "#") {
+                                return
+                        }
+                        // tlsx output lines are bare domains (one per line)
+                        line = strings.ToLower(strings.TrimPrefix(line, "*."))
+                        if !strings.Contains(line, ".") {
+                                return
+                        }
+                        // Only add if it's plausibly a subdomain of a target domain
+                        for _, d := range m.cfg.Target.Domains {
+                                if strings.HasSuffix(line, "."+d) || line == d {
+                                        if m.store.AddSubdomainFromSource(line, "tlsx") {
+                                                newSubs++
+                                                m.log.Debug("tlsx: new SAN subdomain: %s", line)
+                                        }
+                                        break
+                                }
+                        }
+                }),
+        )
+
+        if r.IsTimeout() {
+                m.log.ToolTimeout("tlsx", newSubs, timeout)
+        } else if r.Err != nil && newSubs == 0 {
+                m.log.ToolError("tlsx", fmt.Errorf(r.DiagString()), r.Stderr)
+        } else {
+                m.log.ToolDone("tlsx", newSubs, time.Since(start))
+                if newSubs > 0 {
+                        m.log.Info("tlsx: %d new subdomains from TLS SANs added to scope", newSubs)
+                }
+        }
 }

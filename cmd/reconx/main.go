@@ -49,13 +49,26 @@ func main() {
                 wordlist    = flag.String("wordlist", "", "DNS brute-force wordlist (overrides SecLists auto-detection)")
                 resolvers   = flag.String("resolvers", "", "DNS resolvers file (overrides reconx resolvers auto-detection)")
 
-                // Phase toggles
-                skipSubs  = flag.Bool("skip-subs",  false, "Skip subdomain enumeration")
-                skipAlive = flag.Bool("skip-alive", false, "Skip alive host detection")
-                skipPorts = flag.Bool("skip-ports", false, "Skip port scanning")
-                skipURLs  = flag.Bool("skip-urls",  false, "Skip URL discovery")
-                skipJS    = flag.Bool("skip-js",    false, "Skip JS & secret analysis")
-                skipVuln  = flag.Bool("skip-vuln",  false, "Skip vulnerability scanning")
+		// Target modes
+		singleTarget = flag.Bool("single", false, "Single target mode (scans only the specified host/domain; skips subdomain enum)")
+		targetURL    = flag.String("u", "", "Single target URL or host (shorthand for single target scan, e.g. -u https://admin.example.com)")
+
+		// Phase toggles
+		skipSubs  = flag.Bool("skip-subs",  false, "Skip subdomain enumeration")
+		skipAlive = flag.Bool("skip-alive", false, "Skip alive host detection")
+		skipPorts = flag.Bool("skip-ports", false, "Skip port scanning")
+		skipURLs  = flag.Bool("skip-urls",  false, "Skip URL discovery")
+		skipJS    = flag.Bool("skip-js",    false, "Skip JS & secret analysis")
+		skipVuln  = flag.Bool("skip-vuln",  false, "Skip vulnerability scanning")
+
+		// Optional phases (opt-in for active fuzzing, opt-out for passive)
+		enableFuzz  = flag.Bool("fuzz",        false, "Enable directory & content fuzzing (feroxbuster/dirsearch)")
+		enableDirfuzz = flag.Bool("dirfuzz",   false, "Alias for --fuzz")
+		skipFuzz    = flag.Bool("skip-dirfuzz",false, "Explicitly skip directory fuzzing")
+                enableParams= flag.Bool("params",      false, "Enable hidden parameter discovery (arjun)")
+                skipParams  = flag.Bool("skip-params", false, "Explicitly skip parameter discovery")
+                skipCloud   = flag.Bool("skip-cloud",  false, "Skip cloud/S3 bucket enumeration")
+                skipCORS    = flag.Bool("skip-cors",   false, "Skip CORS misconfiguration scanning")
 
                 // Timeout control
                 // --no-timeout removes ALL timeouts from every tool.
@@ -133,16 +146,29 @@ func main() {
         // Build config (defaults → optional config file → CLI flags)
         cfg := config.DefaultConfig()
 
-        // Load config file if specified
-        if *configFile != "" {
-                if err := config.Load(cfg, *configFile); err != nil {
-                        fmt.Fprintf(os.Stderr, "Error loading config %s: %v\n", *configFile, err)
+        // Load config file if specified or default locations (~/.config/reconx/config.yaml or ./reconx.yaml)
+        cfgPath := *configFile
+        if cfgPath == "" {
+                home, _ := os.UserHomeDir()
+                userConfig := filepath.Join(home, ".config", "reconx", "config.yaml")
+                if _, err := os.Stat(userConfig); err == nil {
+                        cfgPath = userConfig
+                } else if _, err := os.Stat("reconx.yaml"); err == nil {
+                        cfgPath = "reconx.yaml"
+                }
+        }
+        if cfgPath != "" {
+                if err := config.Load(cfg, cfgPath); err != nil && *configFile != "" {
+                        fmt.Fprintf(os.Stderr, "Error loading config %s: %v\n", cfgPath, err)
                         os.Exit(1)
                 }
-                cfg.ConfigPath = *configFile
+                cfg.ConfigPath = cfgPath
         }
 
         // Target
+        if *targetURL != "" {
+                domains = append(domains, *targetURL)
+        }
         cfg.Target.Domains  = cleanDomains(domains)
         cfg.Target.IPRanges = []string(ipRanges)
         cfg.Target.ASNs     = []string(asns)
@@ -207,12 +233,23 @@ func main() {
         }
 
         // Phase toggles
-        if *skipSubs  { cfg.Phases.SubdomainEnum = false }
-        if *skipAlive { cfg.Phases.AliveCheck    = false }
-        if *skipPorts { cfg.Phases.PortScan      = false }
-        if *skipURLs  { cfg.Phases.URLDiscovery  = false }
-        if *skipJS    { cfg.Phases.JSAnalysis    = false }
-        if *skipVuln  { cfg.Phases.VulnScan      = false }
+        if *singleTarget || (*targetURL != "" && !explicit["skip-subs"]) {
+                cfg.Phases.SubdomainEnum = false
+        }
+        if *skipSubs    { cfg.Phases.SubdomainEnum = false }
+        if *skipAlive   { cfg.Phases.AliveCheck    = false }
+        if *skipPorts   { cfg.Phases.PortScan      = false }
+        if *skipURLs    { cfg.Phases.URLDiscovery  = false }
+        if *skipJS      { cfg.Phases.JSAnalysis    = false }
+        if *skipVuln    { cfg.Phases.VulnScan      = false }
+
+        // Optional / active phases
+        if *enableFuzz || *enableDirfuzz { cfg.Phases.DirFuzz = true }
+        if *skipFuzz    { cfg.Phases.DirFuzz = false }
+        if *enableParams{ cfg.Phases.Params = true }
+        if *skipParams  { cfg.Phases.Params = false }
+        if *skipCloud   { cfg.Phases.CloudEnum = false }
+        if *skipCORS    { cfg.Phases.CORS = false }
 
         // --no-timeout: set every single tool timeout to 0 (no deadline)
         // Each tool runs until it finishes naturally.
@@ -258,8 +295,11 @@ func main() {
 func cleanDomains(in []string) []string {
         out := make([]string, 0, len(in))
         for _, d := range in {
+                d = strings.TrimSpace(d)
                 d = strings.TrimPrefix(d, "https://")
                 d = strings.TrimPrefix(d, "http://")
+                d = strings.TrimPrefix(d, "*.")
+                d = strings.TrimPrefix(d, "*")
                 d = strings.TrimSuffix(d, "/")
                 d = strings.TrimSpace(d)
                 if d != "" {
