@@ -149,9 +149,23 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
                 {"permute",         "", "", m.runPermute},
         }
 
+        hasPuredns := runner.IsAvailable("puredns")
+        hasShuffledns := runner.IsAvailable("shuffledns")
+
         var wg sync.WaitGroup
         for _, t := range tools {
                 t := t
+
+                // Avoid running 3 heavy bruteforcers against the same wordlist concurrently.
+                // puredns is massdns-backed and fastest; fallback to shuffledns, then dnsx-brute.
+                if t.name == "shuffledns" && hasPuredns {
+                        board.Skip(t.name, "using puredns (fastest)")
+                        continue
+                }
+                if t.name == "dnsx-brute" && (hasPuredns || hasShuffledns) {
+                        board.Skip(t.name, "using massdns engine")
+                        continue
+                }
 
                 if t.tokenKey != "" && m.cfg.Tokens[t.tokenKey] == "" {
                         board.Skip(t.name, "no "+t.tokenKey+" token")
@@ -229,16 +243,16 @@ func (m *Module) runFindomain(ctx context.Context, domain string, board *logger.
 
 func (m *Module) runAmass(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
         tcfg    := m.cfg.Tools["amass"]
-        timeout := 10 * time.Minute
-        if tcfg.Timeout > 0 {
+        timeout := 3 * time.Minute
+        if tcfg.Timeout > 0 && tcfg.Timeout < 180 {
                 timeout = time.Duration(tcfg.Timeout) * time.Second
         }
-        // We rely on runner.WithTimeout alone — no double context wrap.
-        // runner.Run will derive its own context with this deadline.
+        // amass -timeout 3 ensures amass stops itself after 3 minutes
         r := runner.Run(ctx, tcfg.Path,
-                []string{"enum", "-passive", "-d", domain, "-timeout", "8", "-silent"},
+                []string{"enum", "-passive", "-d", domain, "-timeout", "3", "-silent"},
                 runner.WithTimeout(timeout),
-                runner.WithStderrCallback(func(line string) { m.log.Debug("amass: %s", line) }))
+                runner.WithLineCallback(func(line string) { board.Heartbeat("amass") }),
+                runner.WithStderrCallback(func(line string) { board.Heartbeat("amass") }))
 
         if r.IsTimeout() {
                 board.Timeout("amass", len(r.Lines))
@@ -407,8 +421,19 @@ func (m *Module) runDnsxBrute(ctx context.Context, domain string, board *logger.
         if tcfg.Path != "" {
                 path = tcfg.Path
         }
-        r := runner.Run(ctx, path, []string{"-silent", "-d", domain, "-w", wordlist},
-                runner.WithTimeout(30*time.Minute))
+        args := []string{"-silent", "-d", domain, "-w", wordlist, "-t", "100", "-rl", "500"}
+        resolvers := findResolvers(m.cfg)
+        if resolvers != "" {
+                args = append(args, "-r", resolvers)
+        }
+        timeout := 10 * time.Minute
+        if tcfg.Timeout > 0 {
+                timeout = time.Duration(tcfg.Timeout) * time.Second
+        }
+        r := runner.Run(ctx, path, args,
+                runner.WithTimeout(timeout),
+                runner.WithLineCallback(func(line string) { board.Heartbeat("dnsx-brute") }),
+                runner.WithStderrCallback(func(line string) { board.Heartbeat("dnsx-brute") }))
 
         finalize(board, "dnsx-brute", r)
         return r.Lines, r.Stderr
@@ -429,7 +454,14 @@ func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.Pr
         if resolvers != "" {
                 args = append(args, "-r", resolvers)
         }
-        r := runner.Run(ctx, path, args, runner.WithTimeout(30*time.Minute))
+        timeout := 15 * time.Minute
+        if tcfg, ok := m.cfg.Tools["puredns"]; ok && tcfg.Timeout > 0 {
+                timeout = time.Duration(tcfg.Timeout) * time.Second
+        }
+        r := runner.Run(ctx, path, args,
+                runner.WithTimeout(timeout),
+                runner.WithLineCallback(func(line string) { board.Heartbeat("puredns") }),
+                runner.WithStderrCallback(func(line string) { board.Heartbeat("puredns") }))
         finalize(board, "puredns", r)
         return r.Lines, r.Stderr
 }
