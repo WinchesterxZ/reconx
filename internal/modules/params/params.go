@@ -99,8 +99,22 @@ func (m *Module) Run(ctx context.Context) error {
 	m.log.ToolCmd("arjun", args, "")
 	start := time.Now()
 
-	r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
+	board := m.log.NewProgressBoard()
+	board.Register("arjun", fmt.Sprintf("%d endpoints", len(targetURLs)))
+
+	onLine := func(line string) {
+		board.Heartbeat("arjun")
+	}
+
+	r := runner.Run(ctx, path, args, 
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(onLine),
+		runner.WithStderrCallback(onLine),
+	)
+	
 	if r.Err != nil && !runner.IsAvailable(path) {
+		board.Fail("arjun", r.DiagString())
+		board.Stop()
 		m.log.ToolError("arjun", fmt.Errorf(r.DiagString()), r.Stderr)
 		return nil
 	}
@@ -124,6 +138,8 @@ func (m *Module) Run(ctx context.Context) error {
 		}
 	}
 
+	board.Done("arjun", totalParams)
+	board.Stop()
 	m.log.ToolDone("arjun", totalParams, time.Since(start))
 	m.log.PhaseComplete("Hidden Parameter Discovery", totalParams, time.Since(start))
 	return nil
