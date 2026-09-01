@@ -406,7 +406,10 @@ func (s *Store) SaveJSON(outDir string) error {
 	for u := range s.URLs {
 		urls_slice = append(urls_slice, u)
 	}
-	sort.Strings(urls_slice)
+	jsonURLs := urls_slice
+	if len(jsonURLs) > 10000 {
+		jsonURLs = jsonURLs[:10000]
+	}
 
 	snap := snapshot{
 		ScanID:       s.ScanID,
@@ -416,7 +419,7 @@ func (s *Store) SaveJSON(outDir string) error {
 		SubSources:   subSources,
 		Hosts:        hosts,
 		Ports:        s.Ports,
-		URLs:         urls_slice,
+		URLs:         jsonURLs,
 		Findings:     s.Findings,
 		Secrets:      s.Secrets,
 		DirResults:   s.DirResults,

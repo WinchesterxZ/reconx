@@ -92,8 +92,6 @@ func (m *Module) extractKeywords() []string {
 }
 
 func (m *Module) runS3Scanner(ctx context.Context, keywords []string, outDir string) int {
-	// s3scanner scan does NOT support -o for output — it writes to stdout only.
-	// Write keywords to a temp file and pass with -f flag.
 	bucketsFile := filepath.Join(outDir, "s3scanner_input.txt")
 	if err := os.WriteFile(bucketsFile, []byte(strings.Join(keywords, "\n")+"\n"), 0644); err != nil {
 		m.log.Warn("s3scanner: could not write input file: %v", err)
@@ -102,32 +100,42 @@ func (m *Module) runS3Scanner(ctx context.Context, keywords []string, outDir str
 	defer os.Remove(bucketsFile)
 
 	args := []string{"scan", "-f", bucketsFile}
-
 	m.log.Tool("s3scanner", fmt.Sprintf("Scanning %d keywords for public S3 buckets", len(keywords)))
 	m.log.ToolCmd("s3scanner", args, "")
 	start := time.Now()
 	count := 0
 
+	cb := func(line string) {
+		line = strings.TrimSpace(line)
+		ll := strings.ToLower(line)
+		if strings.Contains(ll, "found") ||
+			strings.Contains(ll, "open") ||
+			strings.Contains(ll, "public") {
+			count++
+			m.store.AddCloudAsset(&store.CloudAsset{
+				Provider:   "aws",
+				Name:       line,
+				URL:        fmt.Sprintf("https://%s.s3.amazonaws.com", line),
+				Status:     "public",
+				Accessible: true,
+			})
+			m.log.Warn("  [Cloud] Public S3 Bucket: %s", line)
+		}
+	}
+
 	r := runner.Run(ctx, "s3scanner", args,
 		runner.WithTimeout(10*time.Minute),
-		runner.WithLineCallback(func(line string) {
-			line = strings.TrimSpace(line)
-			ll := strings.ToLower(line)
-			if strings.Contains(ll, "found") ||
-				strings.Contains(ll, "open") ||
-				strings.Contains(ll, "public") {
-				count++
-				m.store.AddCloudAsset(&store.CloudAsset{
-					Provider:   "aws",
-					Name:       line,
-					URL:        fmt.Sprintf("https://%s.s3.amazonaws.com", line),
-					Status:     "public",
-					Accessible: true,
-				})
-				m.log.Warn("  [Cloud] Public S3 Bucket: %s", line)
-			}
-		}),
+		runner.WithLineCallback(cb),
 	)
+
+	// If the installed version is the Go s3scanner binary, it requires -bucket-file
+	if r.Err != nil && strings.Contains(strings.Join(r.Stderr, " "), "bucket-file") {
+		args = []string{"-bucket-file", bucketsFile}
+		r = runner.Run(ctx, "s3scanner", args,
+			runner.WithTimeout(10*time.Minute),
+			runner.WithLineCallback(cb),
+		)
+	}
 
 	if r.Err != nil && count == 0 {
 		m.log.Debug("s3scanner: %s", r.DiagString())

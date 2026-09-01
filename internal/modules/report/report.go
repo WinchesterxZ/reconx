@@ -94,6 +94,13 @@ func Generate(st *store.Store, targets []string, outDir string) error {
         urlList := st.GetURLs()
         jsList := st.GetJSFiles()
 
+        // In the HTML report, cap rendered URLs to top 5,000 to keep the report file lightweight
+        // (all 1M+ raw URLs are permanently saved in urls/urls_all.txt and category files)
+        displayURLs := urlList
+        if len(displayURLs) > 5000 {
+                displayURLs = displayURLs[:5000]
+        }
+
         data := &ReportData{
                 ScanID:          st.ScanID,
                 Targets:         targets,
@@ -112,8 +119,8 @@ func Generate(st *store.Store, targets []string, outDir string) error {
                 Ports:           ports,
                 Findings:        findings,
                 Secrets:         st.Secrets,
-                URLs:           urlList,
-                JSFiles:        jsList,
+                URLs:            displayURLs,
+                JSFiles:         jsList,
         }
 
         for _, f := range findings {
