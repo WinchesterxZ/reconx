@@ -301,7 +301,6 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	hasAlive     := fileHasContent(filepath.Join(p.outDir, "alive.txt"))
 	hasPorts     := fileHasContent(filepath.Join(p.outDir, "ports.txt"))
 	hasURLs      := fileHasContent(filepath.Join(p.outDir, "urls.txt"))
-	hasJS        := fileHasContent(filepath.Join(p.outDir, "js_files.txt"))
 	hasDirs      := fileHasContent(filepath.Join(p.outDir, "dirs", "all_dirs.txt"))
 
         if isResume {
@@ -379,11 +378,13 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 
 	// ── PHASE 5: JS & Secret Analysis ───────────────────────────────────────
-	if p.cfg.Phases.JSAnalysis && !(isResume && hasJS) && ctx.Err() == nil {
+	hasJSAnalysis := fileHasContent(filepath.Join(p.outDir, ".js_done"))
+	if p.cfg.Phases.JSAnalysis && !(isResume && hasJSAnalysis) && ctx.Err() == nil {
 		mod := js.New(p.cfg, p.store, p.log, p.outDir)
 		if err := mod.Run(ctx); err != nil && err != context.Canceled {
 			p.log.Error("JS analysis phase: %v", err)
 		}
+		_ = os.WriteFile(filepath.Join(p.outDir, ".js_done"), []byte("done"), 0644)
 	}
 
 	// ── PHASE 6: Vulnerability Scanning ─────────────────────────────────────
