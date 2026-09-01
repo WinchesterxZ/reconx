@@ -106,7 +106,30 @@ func (m *Module) Run(ctx context.Context) error {
 		board.Heartbeat("arjun")
 	}
 
-	r := runner.Run(ctx, path, args, 
+	// Arjun has a known bug where its Python thread pool hangs on exit.
+	// Since it only writes the JSON file at the very end of its scan,
+	// we can monitor the file and aggressively kill Arjun once it's valid.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	go func() {
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case <-time.After(3 * time.Second):
+				if data, err := os.ReadFile(outFile); err == nil && len(data) > 2 {
+					var test map[string]interface{}
+					if json.Unmarshal(data, &test) == nil {
+						cancel() // JSON is valid! Kill Arjun immediately.
+						return
+					}
+				}
+			}
+		}
+	}()
+
+	r := runner.Run(runCtx, path, args, 
 		runner.WithTimeout(timeout),
 		runner.WithLineCallback(onLine),
 		runner.WithStderrCallback(onLine),
