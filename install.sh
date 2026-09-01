@@ -34,14 +34,15 @@ echo -e "  ${CYAN}ReconX Tool Installer v2.0${NC}"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 0 — Detect Go binary
+# STEP 0 — Detect Go binary (Require Go >= 1.21)
 # ─────────────────────────────────────────────────────────────────────────────
 step "Resolving Go environment"
 
 GO_BIN=""
 for candidate in \
-    "$(which go 2>/dev/null)" \
     /usr/local/go/bin/go \
+    "$HOME/.local/go/bin/go" \
+    "$(which go 2>/dev/null)" \
     /usr/bin/go \
     "$HOME/go/bin/go" \
     /snap/bin/go; do
@@ -51,32 +52,55 @@ for candidate in \
     fi
 done
 
+NEED_GO_UPGRADE=0
 if [ -z "$GO_BIN" ]; then
-    error "Go not found — installing Go 1.22..."
+    NEED_GO_UPGRADE=1
+else
+    GO_VER_STR=$($GO_BIN version 2>/dev/null | awk '{print $3}' | sed 's/go//')
+    GO_MAJOR=$(echo "$GO_VER_STR" | cut -d. -f1)
+    GO_MINOR=$(echo "$GO_VER_STR" | cut -d. -f2)
+    if [ -z "$GO_MINOR" ] || [ "$GO_MAJOR" -lt 1 ] || { [ "$GO_MAJOR" -eq 1 ] && [ "$GO_MINOR" -lt 21 ]; }; then
+        warn "Found outdated Go $GO_VER_STR (< 1.21 — modern tools require Go >= 1.21) — upgrading to Go 1.22.4..."
+        NEED_GO_UPGRADE=1
+    fi
+fi
+
+if [ "$NEED_GO_UPGRADE" -eq 1 ]; then
+    info "Installing modern Go 1.22.4..."
     ARCH=$(uname -m)
     case "$ARCH" in
         x86_64)  GO_ARCH="amd64" ;;
         aarch64) GO_ARCH="arm64" ;;
         *)       GO_ARCH="amd64" ;;
     esac
-    wget -q "https://go.dev/dl/go1.22.4.linux-${GO_ARCH}.tar.gz" -O /tmp/go.tar.gz
-    sudo rm -rf /usr/local/go
-    sudo tar -C /usr/local -xzf /tmp/go.tar.gz
-    rm /tmp/go.tar.gz
-    GO_BIN=/usr/local/go/bin/go
-    echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee /etc/profile.d/golang.sh > /dev/null
-    export PATH="$PATH:/usr/local/go/bin"
-    success "Go installed"
+    TMP_GO="/tmp/go1.22.4.tar.gz"
+    wget -q --timeout=30 "https://go.dev/dl/go1.22.4.linux-${GO_ARCH}.tar.gz" -O "$TMP_GO"
+    if [ -s "$TMP_GO" ]; then
+        if [ "$(id -u)" -eq 0 ]; then
+            rm -rf /usr/local/go && tar -C /usr/local -xzf "$TMP_GO"
+            GO_BIN=/usr/local/go/bin/go
+        elif sudo -n true 2>/dev/null; then
+            sudo rm -rf /usr/local/go && sudo tar -C /usr/local -xzf "$TMP_GO"
+            GO_BIN=/usr/local/go/bin/go
+        else
+            mkdir -p "$HOME/.local"
+            rm -rf "$HOME/.local/go" && tar -C "$HOME/.local" -xzf "$TMP_GO"
+            GO_BIN="$HOME/.local/go/bin/go"
+        fi
+        rm -f "$TMP_GO"
+        success "Go installed/upgraded to 1.22.4"
+    else
+        warn "Failed to download Go tarball — attempting to continue with system Go"
+    fi
 fi
 
 export GOPATH="${GOPATH:-$HOME/go}"
-export PATH="$PATH:$GOPATH/bin:$(dirname $GO_BIN)"
+export PATH="$(dirname "$GO_BIN"):$GOPATH/bin:$PATH"
 
 success "Go: $($GO_BIN version 2>/dev/null | awk '{print $3}')"
 success "GOPATH: $GOPATH"
 info "All tools will be symlinked to /usr/local/bin"
 
-# ─────────────────────────────────────────────────────────────────────────────
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 1 — Write permanent PATH to shell profiles
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,9 +118,12 @@ done
 
 if [ -f /etc/profile.d/go-tools.sh ] && grep -q "go/bin" /etc/profile.d/go-tools.sh 2>/dev/null; then
     success "/etc/profile.d/go-tools.sh already configured"
-elif sudo -n true 2>/dev/null; then
-    echo "export PATH=\"\$PATH:\$HOME/go/bin:/usr/local/go/bin\"" \
-        | sudo tee /etc/profile.d/go-tools.sh > /dev/null 2>&1 || true
+elif sudo -n true 2>/dev/null || [ "$(id -u)" -eq 0 ]; then
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "export PATH=\"\$PATH:\$HOME/go/bin:/usr/local/go/bin\"" > /etc/profile.d/go-tools.sh 2>/dev/null || true
+    else
+        echo "export PATH=\"\$PATH:\$HOME/go/bin:/usr/local/go/bin\"" | sudo tee /etc/profile.d/go-tools.sh > /dev/null 2>&1 || true
+    fi
     success "Wrote /etc/profile.d/go-tools.sh (system-wide)"
 else
     success "User shell profiles configured with Go PATH"
@@ -110,7 +137,12 @@ step "Checking conflicting apt versions (httpx, amass)"
 
 # Remove apt httpx if present as a debian package (conflicts with ProjectDiscovery httpx)
 if dpkg-query -W -f='${Status}' httpx 2>/dev/null | grep -q "install ok installed"; then
-    if sudo -n true 2>/dev/null; then
+    if [ "$(id -u)" -eq 0 ]; then
+        info "Removing apt httpx (incompatible with reconx — using ProjectDiscovery version)..."
+        apt-get remove -y -qq httpx 2>/dev/null || true
+        rm -f /usr/bin/httpx
+        success "Removed apt httpx"
+    elif sudo -n true 2>/dev/null; then
         info "Removing apt httpx (incompatible with reconx — using ProjectDiscovery version)..."
         sudo apt-get remove -y -qq httpx 2>/dev/null || true
         sudo rm -f /usr/bin/httpx
@@ -124,7 +156,12 @@ fi
 
 # Remove apt amass if present
 if dpkg-query -W -f='${Status}' amass 2>/dev/null | grep -q "install ok installed"; then
-    if sudo -n true 2>/dev/null; then
+    if [ "$(id -u)" -eq 0 ]; then
+        info "Removing apt amass (has libpostal crash bug — will use clean binary)..."
+        apt-get remove -y -qq amass 2>/dev/null || true
+        rm -f /usr/bin/amass
+        success "Removed apt amass"
+    elif sudo -n true 2>/dev/null; then
         info "Removing apt amass (has libpostal crash bug — will use clean binary)..."
         sudo apt-get remove -y -qq amass 2>/dev/null || true
         sudo rm -f /usr/bin/amass
@@ -137,12 +174,12 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3 — System dependencies (Skip if already satisfied)
+# STEP 3 — System dependencies (Fast non-interactive install)
 # ─────────────────────────────────────────────────────────────────────────────
 step "Checking system dependencies"
 
 MISSING_DEPS=()
-for dep in git curl wget jq unzip pipx nmap whois; do
+for dep in git curl wget jq unzip nmap whois make gcc; do
     if ! command -v "$dep" &>/dev/null; then
         MISSING_DEPS+=("$dep")
     fi
@@ -150,13 +187,14 @@ done
 
 if [ ${#MISSING_DEPS[@]} -gt 0 ]; then
     info "Installing missing system packages: ${MISSING_DEPS[*]}..."
-    sudo apt-get update -qq 2>/dev/null || true
-    sudo apt-get install -y -qq \
-        git curl wget jq unzip pipx \
-        build-essential libpcap-dev \
-        python3 python3-pip \
-        nmap dnsutils whois \
-        2>/dev/null || true
+    APT_CMD="DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git curl wget jq unzip build-essential libpcap-dev python3 python3-pip nmap dnsutils whois make gcc"
+    if [ "$(id -u)" -eq 0 ]; then
+        apt-get update -qq 2>/dev/null || true
+        eval "$APT_CMD" 2>/dev/null || true
+    elif sudo -n true 2>/dev/null; then
+        sudo apt-get update -qq 2>/dev/null || true
+        sudo bash -c "$APT_CMD" 2>/dev/null || true
+    fi
     success "System packages installed"
 else
     success "System dependencies already satisfied"
@@ -185,12 +223,44 @@ install_go_tool() {
 
     # 3. Download and build via Go
     info "Installing $name..."
+    mkdir -p "$GOPATH/bin"
     $GO_BIN install "${pkg}@latest" 2>/dev/null || true
     if [ -x "$GOPATH/bin/$name" ] || command -v "$name" &>/dev/null; then
         success "$name installed → $GOPATH/bin/$name"
-    else
-        warn "$name: install failed (optional tool — skipping)"
+        return 0
     fi
+
+    # 4. Fallback: Prebuilt release binary for ProjectDiscovery / popular tools
+    case "$name" in
+        subfinder|nuclei|httpx|naabu|dnsx|katana|chaos|asnmap|tlsx)
+            info "Trying prebuilt release binary for $name..."
+            ARCH=$(uname -m)
+            case "$ARCH" in
+                x86_64)  PD_ARCH="amd64" ;;
+                aarch64) PD_ARCH="arm64" ;;
+                *)       PD_ARCH="amd64" ;;
+            esac
+            TMP_ZIP=$(mktemp -d)
+            REL_URL=$(curl -s "https://api.github.com/repos/projectdiscovery/${name}/releases/latest" 2>/dev/null \
+                | grep -i "browser_download_url.*linux_${PD_ARCH}.zip" | head -n 1 | cut -d '"' -f 4)
+            if [ -n "$REL_URL" ]; then
+                wget -q --timeout=20 "$REL_URL" -O "$TMP_ZIP/${name}.zip" 2>/dev/null
+                if [ -s "$TMP_ZIP/${name}.zip" ]; then
+                    unzip -q -o "$TMP_ZIP/${name}.zip" -d "$TMP_ZIP" 2>/dev/null
+                    if [ -x "$TMP_ZIP/$name" ]; then
+                        cp "$TMP_ZIP/$name" "$GOPATH/bin/$name"
+                        chmod +x "$GOPATH/bin/$name"
+                        success "$name installed (prebuilt binary) → $GOPATH/bin/$name"
+                        rm -rf "$TMP_ZIP"
+                        return 0
+                    fi
+                fi
+            fi
+            rm -rf "$TMP_ZIP"
+            ;;
+    esac
+
+    warn "$name: install failed (optional tool — skipping)"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
