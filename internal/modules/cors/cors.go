@@ -1,19 +1,20 @@
 package cors
 
 import (
-"context"
-"fmt"
-"net/http"
-"os"
-"path/filepath"
-"strings"
-"sync"
-"time"
+	"context"
+	"fmt"
+	"math/rand"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
 
-"github.com/reconx/reconx/internal/config"
-"github.com/reconx/reconx/internal/store"
-"github.com/reconx/reconx/pkg/logger"
-"github.com/reconx/reconx/pkg/runner"
+	"github.com/reconx/reconx/internal/config"
+	"github.com/reconx/reconx/internal/store"
+	"github.com/reconx/reconx/pkg/logger"
+	"github.com/reconx/reconx/pkg/runner"
 )
 
 // Module tests live HTTP/S hosts for CORS misconfigurations.
@@ -123,6 +124,13 @@ func (m *Module) runBuiltinCORSProbe(ctx context.Context, hosts []*store.Host) i
 		for _, testOrigin := range testOrigins {
 			wg.Add(1)
 			sem <- struct{}{}
+
+			// Add jitter before each request. Without this, 20 concurrent
+			// requests × 3 origins per host hit a server in a perfectly
+			// metronomic pattern that gets rate-limited / blocked by
+			// Cloudflare / Akamai. A random 10-50ms delay per request
+			// spreads the load and looks more like browser traffic.
+			time.Sleep(time.Duration(10+rand.Intn(40)) * time.Millisecond)
 
 			go func(urlStr, origin string) {
 				defer wg.Done()

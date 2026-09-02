@@ -12,6 +12,7 @@ import (
 
         "github.com/reconx/reconx/internal/config"
         "github.com/reconx/reconx/internal/pipeline"
+	"github.com/reconx/reconx/pkg/runner"
 )
 
 const version = "v1.0.0"
@@ -86,8 +87,10 @@ func main() {
                 resumeDir = flag.String("resume", "", "Resume scan from existing output directory (skips completed phases)")
 
                 // Special
-                initCmd  = flag.Bool("init",    false, "Write default reconx.yaml config and exit")
-                version_ = flag.Bool("version", false, "Print version and exit")
+                initCmd   = flag.Bool("init",    false, "Write default reconx.yaml config and exit")
+                version_  = flag.Bool("version", false, "Print version and exit")
+                listTools = flag.Bool("list-tools",  false, "List all known tools, their availability, and how to install missing ones, then exit")
+                listPhases = flag.Bool("list-phases", false, "List all pipeline phases and what they do, then exit")
         )
 
         flag.Var(&domains,  "d",   "Target domain (repeatable: -d a.com -d b.com)")
@@ -134,6 +137,16 @@ func main() {
                 os.Exit(0)
         }
 
+        if *listTools {
+                printToolAvailability()
+                os.Exit(0)
+        }
+
+        if *listPhases {
+                printPhaseList()
+                os.Exit(0)
+        }
+
         if *initCmd {
                 if err := config.WriteDefault("reconx.yaml"); err != nil {
                         fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -165,7 +178,15 @@ func main() {
                 cfg.ConfigPath = cfgPath
         }
 
-        // Target
+        // Target: -u is purely additive. It can be combined with -d to
+        // also probe a specific host (admin panel, etc.) in addition to
+        // the parent domain. The previous code added -u to the domain
+        // list AND disabled subdomain enum whenever -u was set —
+        // silently dropping -d.
+        // -u is purely additive. It can be combined with -d to also probe a
+        // specific host (admin panel, etc.) in addition to the parent
+        // domain. The previous code added -u to the domain list AND
+        // disabled subdomain enum whenever -u was set — silently dropping -d.
         if *targetURL != "" {
                 domains = append(domains, *targetURL)
         }
@@ -233,7 +254,16 @@ func main() {
         }
 
         // Phase toggles
-        if *singleTarget || (*targetURL != "" && !explicit["skip-subs"]) {
+        // --single and -u both opt out of subdomain enum, but -u is
+        // only "single target" if it was the ONLY target given. If the
+        // user passed both -u and -d, the -d domains still get full
+        // subdomain enumeration; -u just adds an extra live-host probe.
+        // -u is "single target" only if no -d flag was given. If both
+        // -u and -d are present, the -d domains still get full subdomain
+        // enumeration; -u just adds an extra live-host probe.
+        isOnlyURL := *targetURL != "" && !hasOnlyFlagValue(domains, *targetURL)
+        singleHost := *singleTarget || (*targetURL != "" && isOnlyURL)
+        if singleHost && !explicit["skip-subs"] {
                 cfg.Phases.SubdomainEnum = false
         }
         if *skipSubs    { cfg.Phases.SubdomainEnum = false }
@@ -317,4 +347,88 @@ func setToken(cfg *config.Config, key, flagVal, env string) {
         if v := os.Getenv(env); v != "" {
                 cfg.Tokens[key] = v
         }
+}
+
+// hasOnlyFlagValue returns true if v is the only value in domains.
+// (Used to distinguish "single -u target" from "-u + -d combo".)
+func hasOnlyFlagValue(domains []string, v string) bool {
+	if len(domains) == 0 {
+		return false
+	}
+	if len(domains) == 1 && domains[0] == v {
+		return true
+	}
+	return false
+}
+
+
+// printToolAvailability shows which reconx tools are installed in this
+// environment. Use this when triaging "why isn't X running?".
+func printToolAvailability() {
+	fmt.Println("\n  reconx tool availability check")
+	fmt.Println("  " + strings.Repeat("─", 50))
+
+	categories := []struct {
+		label string
+		tools []string
+	}{
+		{"Subdomain", []string{"subfinder", "assetfinder", "amass", "findomain", "chaos", "puredns", "dnsx", "github-subdomains", "shuffledns", "massdns"}},
+		{"Alive",     []string{"httpx", "curl", "wafw00f", "tlsx", "subjack"}},
+		{"Ports",     []string{"naabu"}},
+		{"URLs",      []string{"waybackurls", "gau", "gauplus", "katana", "hakrawler", "gospider", "paramspider"}},
+		{"DirFuzz",   []string{"feroxbuster", "ffuf", "dirsearch"}},
+		{"Params",    []string{"arjun", "dalfox", "getJS"}},
+		{"Cloud/CORS",[]string{"s3scanner", "cloud_enum", "corsy"}},
+		{"JS/Secrets",[]string{"mantra", "jsecret", "subjs", "trufflehog", "gitleaks"}},
+		{"Vuln",      []string{"nuclei"}},
+	}
+
+	avail, missing := 0, 0
+	for _, cat := range categories {
+		fmt.Printf("\n  %s:\n", cat.label)
+		for _, t := range cat.tools {
+			if runner.IsAvailable(t) {
+				fmt.Printf("    \033[32m✓\033[0m  %s\n", t)
+				avail++
+			} else {
+				fmt.Printf("    \033[31m✗\033[0m  %s\n", t)
+				missing++
+			}
+		}
+	}
+
+	fmt.Printf("\n  %d available, %d missing\n", avail, missing)
+	if missing > 0 {
+		fmt.Println("  Run 'bash install.sh' to install missing tools")
+	}
+	fmt.Println()
+}
+
+// printPhaseList shows every pipeline phase in order with a one-liner.
+func printPhaseList() {
+	fmt.Println("\n  reconx pipeline phases (in order)")
+	fmt.Println("  " + strings.Repeat("─", 50))
+
+	phases := []struct {
+		name string
+		desc string
+	}{
+		{"1. Subdomain enumeration", "25+ passive/active sources (subfinder, amass, crt.sh, OTX, ...)"},
+		{"2. Alive host detection", "httpx probes every subdomain for HTTP/HTTPS"},
+		{"3. Port scanning", "naabu top-1000 ports on every live host"},
+		{"4. URL discovery", "waybackurls, katana, gau, gospider, paramspider"},
+		{"4.7. Directory fuzzing (opt-in)", "feroxbuster/dirsearch/ffuf — adds noise, slow"},
+		{"4.8. Param discovery (opt-in)", "arjun, dalfox, getJS — generates traffic"},
+		{"4.9. Cloud enum", "s3scanner, cloud_enum"},
+		{"4.10. CORS misconfig", "corsy + built-in origin reflection probe"},
+		{"5. JS & secret analysis", "subjs, mantra, jsecret, trufflehog, gitleaks"},
+		{"6. Vulnerability scan", "nuclei with 6 categories (exposures, takeovers, CVEs, ...)"},
+		{"7. Report", "results.json + HTML report"},
+	}
+
+	for _, p := range phases {
+		fmt.Printf("  \033[1;36m%s\033[0m\n", p.name)
+		fmt.Printf("    %s\n", p.desc)
+	}
+	fmt.Println()
 }

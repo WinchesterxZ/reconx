@@ -115,10 +115,20 @@ func New(cfg *config.Config) (*Pipeline, error) {
                 // Normal mode: create new scan directory
                 scanID = fmt.Sprintf("scan-%d", time.Now().Unix())
                 if len(cfg.Target.Domains) > 0 {
+                        // For hyphenated domains, we keep the original
+                        // format ("evil-corp.com-<ts>") and rely on
+                        // extractDomainFromResumeDir to strip the
+                        // trailing timestamp using a digits scan rather
+                        // than LastIndex("-"). The string here stays
+                        // human-readable.
                         scanID = cfg.Target.Domains[0] + "-" + fmt.Sprintf("%d", time.Now().Unix())
                 }
                 outDir = filepath.Join(cfg.Output.OutputDir, scanID)
-                if err := os.MkdirAll(outDir, 0755); err != nil {
+                // 0700 (not 0755) — results.json can contain secrets
+                // and the report is HTML with embedded credentials.
+                // Owner-only access protects against local users
+                // snooping on the scan output.
+                if err := os.MkdirAll(outDir, 0700); err != nil {
                         return nil, fmt.Errorf("creating output dir: %w", err)
                 }
         }
@@ -388,11 +398,13 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	}
 
 	// ── PHASE 6: Vulnerability Scanning ─────────────────────────────────────
-	if p.cfg.Phases.VulnScan && ctx.Err() == nil {
+	hasVulnScan := fileHasContent(filepath.Join(p.outDir, ".vuln_done"))
+	if p.cfg.Phases.VulnScan && !(isResume && hasVulnScan) && ctx.Err() == nil {
 		mod := vuln.New(p.cfg, p.store, p.log, p.outDir)
 		if err := mod.Run(ctx); err != nil && err != context.Canceled {
 			p.log.Error("Vuln scan phase: %v", err)
 		}
+		_ = os.WriteFile(filepath.Join(p.outDir, ".vuln_done"), []byte("done"), 0600)
 	}
 
         // ── PHASE 7: Report ──────────────────────────────────────────────────────
@@ -424,6 +436,9 @@ func fileExists(path string) bool {
         return err == nil
 }
 
+// fileHasContent returns true if path exists and is non-empty.
+// Used by resume mode to decide which phases to skip. Returns false
+// for missing files; returns true as long as the file has any bytes.
 func fileHasContent(path string) bool {
         fi, err := os.Stat(path)
         if err != nil {
@@ -557,4 +572,36 @@ func joinItems(items []string) string {
                 result += s
         }
         return result
+}
+
+// extractDomainFromResumeDir pulls the domain out of a directory name like
+// "evil-corp.com-1700000000" or "example.com-1700000000". The previous code
+// used strings.LastIndex("-") which broke for hyphenated domains — it would
+// return "evil" instead of "evil-corp.com". We use a trailing-digits scan
+// instead, which is more robust.
+func extractDomainFromResumeDir(dir string) string {
+        base := filepath.Base(dir)
+        // Find the last "-" followed by a run of digits (the unix timestamp)
+        for i := len(base) - 1; i >= 0; i-- {
+                if base[i] == '-' {
+                        rest := base[i+1:]
+                        if rest != "" && isAllDigits(rest) {
+                                return base[:i]
+                        }
+                }
+        }
+        // No trailing timestamp — assume the whole basename is the domain
+        return base
+}
+
+func isAllDigits(s string) bool {
+        if s == "" {
+                return false
+        }
+        for _, c := range s {
+                if c < '0' || c > '9' {
+                        return false
+                }
+        }
+        return true
 }

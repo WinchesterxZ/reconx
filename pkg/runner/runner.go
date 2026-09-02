@@ -199,16 +199,36 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
         wg.Add(2)
         go func() { defer wg.Done(); collectStdout() }()
         go func() { defer wg.Done(); collectStderr() }()
-        wg.Wait()
 
+        // Watchdog: when runCtx is cancelled (timeout or parent cancel),
+        // kill the entire process group so child processes (nuclei
+        // templates, katana headless chrome, etc.) don't become zombies.
+        // The previous code killed AFTER cmd.Wait() which is too late —
+        // the process is already reaped and SIGKILL is a no-op.
+        //
+        // Two channels so we don't double-close on either path:
+        //   kill       — closed by the main path once cmd.Wait() returns
+        //                so the watchdog knows to exit if ctx hasn't fired.
+        //   watchdogDone — closed by the watchdog once it has actually
+        //                  returned (used for the deferred join below).
+        kill := make(chan struct{})
+        watchdogDone := make(chan struct{})
+        go func() {
+                defer close(watchdogDone)
+                select {
+                case <-runCtx.Done():
+                        if cmd.Process != nil {
+                                _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+                        }
+                case <-kill:
+                }
+        }()
+
+        wg.Wait()
         runErr := cmd.Wait()
         dur := time.Since(start)
-
-        // Kill the entire process group to prevent orphan child processes
-        // This is critical for tools like katana, nuclei that spawn child processes
-        if cmd.Process != nil {
-                _ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-        }
+        close(kill)             // tell watchdog to exit (process already finished)
+        <-watchdogDone          // wait for the watchdog goroutine to fully return
 
         // Extract exit code
         exitCode := 0
@@ -253,11 +273,14 @@ func ResolveBinaryPath(name string) string {
 
 	for _, cand := range candidates {
 		if info, err := os.Stat(cand); err == nil && !info.IsDir() {
-			// For httpx specifically, avoid python httpx
-			if name == "httpx" && strings.Contains(cand, ".local/bin") {
-				goHttpx := filepath.Join(home, "go", "bin", "httpx")
-				if _, err := os.Stat(goHttpx); err == nil {
-					return goHttpx
+			// ~/.local/bin (Python tooling) shadows Go security tools
+			// (httpx, subfinder, dnsx, nuclei, naabu, etc. all have Python
+			// pip packages with the same name). If a ~/go/bin version
+			// exists, always prefer it.
+			if strings.Contains(cand, ".local/bin") {
+				goBin := filepath.Join(home, "go", "bin", name)
+				if _, err := os.Stat(goBin); err == nil {
+					return goBin
 				}
 			}
 			return cand

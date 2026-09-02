@@ -101,6 +101,7 @@ type Store struct {
 	Subdomains   map[string]bool   // deduplicated subdomain set
 	SubSources   map[string]string // subdomain → source that found it (for report filter)
 	Hosts        map[string]*Host  // domain → host info
+	IPRanges     []string          // IP CIDRs from asnmap / --ip flags
 	Ports        []*Port
 	URLs         map[string]bool // deduplicated URL set
 	JSFiles      map[string]bool
@@ -167,6 +168,31 @@ func (s *Store) AddSubdomainsFromSource(subs []string, source string) int {
 	return count
 }
 
+// AddSubdomainsBulkWithSource is a faster transactional variant of
+// AddSubdomainsFromSource — acquires the write lock once for the whole
+// batch instead of per-element. Use this when adding thousands of
+// subdomains from a single tool result (e.g. after puredns bruteforce).
+// Preserves existing source attribution on re-add (first source wins).
+func (s *Store) AddSubdomainsBulkWithSource(subs []string, source string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, sub := range subs {
+		isNew := !s.Subdomains[sub]
+		s.Subdomains[sub] = true
+		if isNew {
+			count++
+			if source != "" && s.SubSources[sub] == "" {
+				s.SubSources[sub] = source
+			}
+		} else if s.SubSources[sub] == "" && source != "" {
+			// First source wins on re-add
+			s.SubSources[sub] = source
+		}
+	}
+	return count
+}
+
 // AddSubdomains bulk-adds subdomains, returns count of new ones
 func (s *Store) AddSubdomains(subs []string) int {
 	count := 0
@@ -207,6 +233,27 @@ func (s *Store) GetSubdomains() []string {
 	for sub := range s.Subdomains {
 		out = append(out, sub)
 	}
+	return out
+}
+
+// AddIPRange records an IP CIDR (from asnmap, --ip flag, etc.)
+func (s *Store) AddIPRange(cidr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.IPRanges {
+		if existing == cidr {
+			return
+		}
+	}
+	s.IPRanges = append(s.IPRanges, cidr)
+}
+
+// GetIPRanges returns all IP CIDRs
+func (s *Store) GetIPRanges() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, len(s.IPRanges))
+	copy(out, s.IPRanges)
 	return out
 }
 
@@ -371,6 +418,7 @@ func (s *Store) SaveJSON(outDir string) error {
 		Duration     string           `json:"duration"`
 		Subdomains   []string         `json:"subdomains"`
 		SubSources   []SubdomainEntry `json:"subdomain_sources"`
+		IPRanges     []string         `json:"ip_ranges,omitempty"`
 		Hosts        []*Host          `json:"hosts"`
 		Ports        []*Port          `json:"ports"`
 		URLs         []string         `json:"urls"`
@@ -406,6 +454,7 @@ func (s *Store) SaveJSON(outDir string) error {
 	for u := range s.URLs {
 		urls_slice = append(urls_slice, u)
 	}
+	sort.Strings(urls_slice) // deterministic order before truncation
 	jsonURLs := urls_slice
 	if len(jsonURLs) > 10000 {
 		jsonURLs = jsonURLs[:10000]
@@ -417,6 +466,7 @@ func (s *Store) SaveJSON(outDir string) error {
 		Duration:     time.Since(s.StartTime).Round(time.Second).String(),
 		Subdomains:   subs,
 		SubSources:   subSources,
+		IPRanges:     s.IPRanges,
 		Hosts:        hosts,
 		Ports:        s.Ports,
 		URLs:         jsonURLs,
@@ -434,10 +484,20 @@ func (s *Store) SaveJSON(outDir string) error {
 		return err
 	}
 	path := filepath.Join(outDir, "results.json")
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("writing JSON: %w", err)
 	}
 	return nil
+}
+
+// AddSubdomainsFromSourcePreserve is like AddSubdomainsFromSource but
+// preserves existing source attribution when the subdomain is already
+// known. (The previous code overwrote sources on re-add, which broke
+// resume when tools re-ran and overwrote the original source string.)
+//
+// Currently a no-op alias for backwards compatibility.
+func (s *Store) AddSubdomainsFromSourcePreserve(subs []string, source string) int {
+	return s.AddSubdomainsFromSource(subs, source)
 }
 
 // SaveRaw saves a plain text list to a file

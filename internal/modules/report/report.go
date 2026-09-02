@@ -97,9 +97,17 @@ func Generate(st *store.Store, targets []string, outDir string) error {
         // In the HTML report, cap rendered URLs to top 5,000 to keep the report file lightweight
         // (all 1M+ raw URLs are permanently saved in urls/urls_all.txt and category files)
         displayURLs := urlList
+        sort.Strings(displayURLs) // deterministic truncation (GetURLs() is already sorted, but defensive)
         if len(displayURLs) > 5000 {
                 displayURLs = displayURLs[:5000]
         }
+
+        // Redact secret values before they go into the HTML report. The
+        // raw secrets are still in results.json (chmod 0600) but the HTML
+        // report is meant to be shared with the team / client — showing
+        // raw API keys there is a leak. We keep the type, source, and a
+        // short fingerprint so the user can still find the row.
+        redactedSecrets := redactSecrets(st.Secrets)
 
         data := &ReportData{
                 ScanID:          st.ScanID,
@@ -118,7 +126,7 @@ func Generate(st *store.Store, targets []string, outDir string) error {
                 Hosts:           hosts,
                 Ports:           ports,
                 Findings:        findings,
-                Secrets:         st.Secrets,
+                Secrets:         redactedSecrets,
                 URLs:            displayURLs,
                 JSFiles:         jsList,
         }
@@ -220,7 +228,7 @@ func Generate(st *store.Store, targets []string, outDir string) error {
         }
 
         path := filepath.Join(outDir, "report.html")
-        f, err := os.Create(path)
+        f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
         if err != nil {
                 return fmt.Errorf("creating report file: %w", err)
         }
@@ -230,6 +238,32 @@ func Generate(st *store.Store, targets []string, outDir string) error {
                 return fmt.Errorf("rendering template: %w", err)
         }
         return nil
+}
+
+// redactSecretValue returns a redacted form of a secret value. We keep
+// enough to identify the secret (type + last 4 chars) but mask the body
+// so the HTML report can be shared without leaking credentials.
+func redactSecretValue(value string) string {
+        if len(value) <= 8 {
+                return "***REDACTED***"
+        }
+        return value[:4] + "***" + value[len(value)-4:]
+}
+
+// redactSecrets produces a copy of secrets with values redacted.
+// The Type, Source, and File fields are preserved so the report still
+// shows "AWS Access Key from jsecret in app.js" — just hides the key.
+func redactSecrets(secrets []*store.Secret) []*store.Secret {
+        out := make([]*store.Secret, len(secrets))
+        for i, s := range secrets {
+                out[i] = &store.Secret{
+                        Type:   s.Type,
+                        Value:  redactSecretValue(s.Value),
+                        Source: s.Source,
+                        File:   s.File,
+                }
+        }
+        return out
 }
 
 // jsonMarshal is a thin wrapper around encoding/json that we can stub in tests.

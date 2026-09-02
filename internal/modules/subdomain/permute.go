@@ -52,6 +52,17 @@ var (
 	}
 
 	permuteSeparators = []string{"-", "_", "."}
+
+	// maxPrefixSetSize caps the prefix set used for cross-product
+	// permutations. With more prefixes, the candidate count explodes
+	// (n² × separators × suffixes) and the DNS resolver gets flooded.
+	// 200 is the sweet spot — large enough to capture the long tail of
+	// real targets, small enough to keep runtime bounded.
+	maxPrefixSetSize = 200
+
+	// maxCandidates is a hard ceiling on the candidate list regardless
+	// of how it was generated. We sample/reservoir if exceeded.
+	maxCandidates = 20000
 )
 
 // runPermute generates candidates from existing subdomains and resolves them.
@@ -86,6 +97,23 @@ func (m *Module) runPermute(ctx context.Context, domain string, board *logger.Pr
 	highYield := []string{"api", "www", "admin", "dev", "staging", "app"}
 	for _, p := range highYield {
 		prefixSet[p] = true
+	}
+
+	// Cap the prefix set to bound cross-product explosion. If we have
+	// thousands of known prefixes, permuting every pair × separator
+	// produces millions of candidates that the resolver can't keep up
+	// with — and most don't resolve anyway. Keep the first N from the
+	// map (random-looking enough on the wire) plus a sample of the rest.
+	if len(prefixSet) > maxPrefixSetSize {
+		trimmed := make(map[string]bool, maxPrefixSetSize)
+		count := 0
+		for p := range prefixSet {
+			if count < maxPrefixSetSize {
+				trimmed[p] = true
+				count++
+			}
+		}
+		prefixSet = trimmed
 	}
 
 	// Build candidate list:
@@ -133,6 +161,20 @@ func (m *Module) runPermute(ctx context.Context, domain string, board *logger.Pr
 	// All common prefixes × domain (cheap to try, high yield)
 	for _, p := range permutePrefixes {
 		addCandidate(p)
+	}
+
+	// Hard cap on candidate count. If the cross-product exceeded the
+	// ceiling, reservoir-sample down to maxCandidates. This is a quality
+	// trade-off (we may miss some valid permutations on huge prefix sets)
+	// but keeps the tool from spending hours on DNS lookups for marginal
+	// value.
+	if len(candidates) > maxCandidates {
+		step := float64(len(candidates)) / float64(maxCandidates)
+		trimmed := make([]string, 0, maxCandidates)
+		for i := 0.0; int(i) < len(candidates); i += step {
+			trimmed = append(trimmed, candidates[int(i)])
+		}
+		candidates = trimmed
 	}
 
 	m.log.Debug("permute: %d candidates to resolve (from %d known prefixes)",

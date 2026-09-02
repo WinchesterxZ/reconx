@@ -185,3 +185,26 @@ func TestBuildSourceChart(t *testing.T) {
 		t.Errorf("first entry should be subfinder(2), got %v", chart[0])
 	}
 }
+
+
+func TestRedactSecretValue_Short(t *testing.T) {
+	// Short values are entirely redacted
+	got := redactSecretValue("short")
+	if got != "***REDACTED***" {
+		t.Errorf("short secret: want %q, got %q", "***REDACTED***", got)
+	}
+}
+
+func TestRedactSecretValue_Long(t *testing.T) {
+	// Longer values get partial redaction — keep first/last 4 chars, mask middle
+	got := redactSecretValue("AKIAIOSFODNN7EXAMPLE")
+	if !strings.Contains(got, "***") {
+		t.Errorf("expected mask in redacted value, got %q", got)
+	}
+	if strings.Contains(got, "IOSFODNN7EXAMPLE") {
+		t.Errorf("middle of secret should be masked, got %q", got)
+	}
+	if !strings.HasPrefix(got, "AKIA") {
+		t.Errorf("should keep first 4 chars, got %q", got)
+	}
+}

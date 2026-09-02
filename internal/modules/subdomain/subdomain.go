@@ -163,7 +163,11 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
                         continue
                 }
                 if t.name == "dnsx-brute" && (hasPuredns || hasShuffledns) {
-                        board.Skip(t.name, "using massdns engine")
+                        // puredns / shuffledns are massdns-backed and
+                        // faster than dnsx brute with the same wordlist.
+                        // Skipping avoids running 3 concurrent
+                        // bruteforcers against the same wordlist.
+                        board.Skip(t.name, "using puredns/shuffledns (faster)")
                         continue
                 }
 
@@ -469,8 +473,13 @@ func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.Pr
 func (m *Module) runPTRSweep(ctx context.Context, board *logger.ProgressBoard) {
         for _, cidr := range m.cfg.Target.IPRanges {
                 board.Register("dnsx-ptr", cidr)
-                cmd := fmt.Sprintf("echo %s | dnsx -silent -resp-only -ptr", cidr)
-                r   := runner.Run(ctx, "sh", []string{"-c", cmd}, runner.WithTimeout(5*time.Minute))
+                // Pipe CIDR into dnsx via stdin — no shell, no injection risk.
+                // Previously used `sh -c "echo $CIDR | dnsx ..."` which would
+                // execute arbitrary commands if a CIDR contained a backtick,
+                // $, ;, or any other shell metacharacter.
+                r := runner.Run(ctx, "dnsx", []string{"-silent", "-resp-only", "-ptr"},
+                        runner.WithStdin(cidr),
+                        runner.WithTimeout(5*time.Minute))
                 if r.Err == nil && len(r.Lines) > 0 {
                         m.store.AddSubdomains(m.scope.FilterList(r.Lines))
                         board.Done("dnsx-ptr", len(r.Lines))
@@ -492,11 +501,31 @@ func (m *Module) runASNMap(ctx context.Context, asn string, board *logger.Progre
         board.Register("asnmap", asn)
         r := runner.Run(ctx, path, []string{"-a", asn, "-silent"}, runner.WithTimeout(2*time.Minute))
         finalize(board, "asnmap", r)
-        // asnmap returns IP ranges (CIDRs) — store them so the rest of the
-        // pipeline can use them. The old code fetched results but discarded
-        // them, so ASN-derived assets were silently lost.
+        // asnmap returns IP ranges (CIDRs like "1.2.3.0/24"). Storing
+        // them as subdomains was a semantic bug — they're not hostnames.
+        // The store now has a dedicated IPRanges field. asnmap also
+        // returns hostnames it discovers while walking the ASN; we
+        // route those to the subdomain store.
         if len(r.Lines) > 0 {
-                m.store.AddSubdomainsFromSource(m.scope.FilterList(r.Lines), "asnmap")
+                var cidrs, domains []string
+                for _, line := range r.Lines {
+                        line = strings.TrimSpace(line)
+                        if line == "" {
+                                continue
+                        }
+                        if strings.Contains(line, "/") {
+                                // CIDR — store in IP ranges
+                                m.store.AddIPRange(line)
+                                cidrs = append(cidrs, line)
+                        } else if strings.Contains(line, ".") && !strings.ContainsAny(line, " \t/\\") {
+                                // hostname — store as subdomain
+                                domains = append(domains, line)
+                        }
+                }
+                if len(domains) > 0 {
+                        m.store.AddSubdomainsFromSource(m.scope.FilterList(domains), "asnmap")
+                }
+                m.log.Debug("asnmap: %d CIDRs + %d domains", len(cidrs), len(domains))
         }
 }
 

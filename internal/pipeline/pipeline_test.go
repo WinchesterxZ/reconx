@@ -42,3 +42,42 @@ func TestGuessPortService(t *testing.T) {
 		}
 	}
 }
+
+
+func TestExtractDomainFromResumeDir(t *testing.T) {
+	cases := []struct {
+		dir  string
+		want string
+	}{
+		{"/path/example.com-1700000000", "example.com"},
+		{"/path/evil-corp.com-1700000000", "evil-corp.com"},
+		{"/path/with-many-dashes-123.com-1700000000", "with-many-dashes-123.com"},
+		{"/path/no-timestamp", "no-timestamp"},
+		{"/path/just-a-domain.com", "just-a-domain.com"},
+	}
+	for _, c := range cases {
+		got := extractDomainFromResumeDir(c.dir)
+		if got != c.want {
+			t.Errorf("extractDomainFromResumeDir(%q): want %q, got %q", c.dir, c.want, got)
+		}
+	}
+}
+
+func TestIsAllDigits(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"123", true},
+		{"0", true},
+		{"", false},
+		{"12a", false},
+		{"-123", false},
+	}
+	for _, c := range cases {
+		got := isAllDigits(c.input)
+		if got != c.want {
+			t.Errorf("isAllDigits(%q): want %v, got %v", c.input, c.want, got)
+		}
+	}
+}

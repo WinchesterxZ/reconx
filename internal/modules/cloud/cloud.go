@@ -156,13 +156,20 @@ func (m *Module) runCloudEnum(ctx context.Context, keywords []string, outDir str
 		n := 0
 
 		r := runner.Run(ctx, "cloud_enum", args,
-runner.WithTimeout(10*time.Minute),
-runner.WithLineCallback(func(line string) {
-line = strings.TrimSpace(line)
-if strings.Contains(line, "OPEN") || strings.Contains(line, "FOUND") {
-n++
-count++
-m.store.AddCloudAsset(&store.CloudAsset{
+			runner.WithTimeout(10*time.Minute),
+			runner.WithLineCallback(func(line string) {
+				line = strings.TrimSpace(line)
+				ll := strings.ToLower(line)
+				// Require a URL-shaped result before counting. cloud_enum
+				// prints "FOUND N items" banners that match the naive filter
+				// and produced false positives. Look for an actual URL plus a
+				// public/open status indicator.
+				isURL := strings.HasPrefix(ll, "http://") || strings.HasPrefix(ll, "https://")
+				hasOpen := strings.Contains(ll, "open") || strings.Contains(ll, "public") || strings.Contains(ll, "listable")
+				if isURL && hasOpen {
+					n++
+					count++
+					m.store.AddCloudAsset(&store.CloudAsset{
 						Provider:   "multi",
 						Name:       kw,
 						URL:        line,

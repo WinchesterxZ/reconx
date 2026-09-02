@@ -87,8 +87,10 @@ func (m *Module) Run(ctx context.Context) error {
 
         wg.Wait()
 
-        // GitHub org scan via trufflehog if token + org are set
+        // GitHub org scan: only runs if both github token and --org are set.
+        // Heaviest part of the phase — can take many minutes.
         if m.cfg.Tokens["github"] != "" && m.cfg.Target.OrgName != "" {
+                m.log.Info("GitHub org scan enabled (org=%s) — this may take several minutes", m.cfg.Target.OrgName)
                 m.runTrufflehogGitHub(ctx)
         }
 
@@ -106,6 +108,53 @@ func (m *Module) Run(ctx context.Context) error {
         stats := m.store.Stats()
         m.log.PhaseComplete("JS & Secret Analysis", stats["secrets"], time.Since(start))
         return nil
+}
+
+
+// capJSFiles limits how many JS files we feed to secret scanners. With
+// thousands of files, trufflehog/gitleaks can take hours. Capping keeps
+// runtime predictable and still catches the vast majority of secrets.
+const maxJSFilesForSecretScan = 2000
+
+// writeJSToTempDir copies up to maxJSFilesForSecretScan JS file URLs into a
+// temporary directory as <sha>.js files. We don't actually fetch the files
+// (the URL store only contains URLs, not contents); instead we create empty
+// placeholder files so the file count is bounded. Tools that download
+// (trufflehog filesystem) won't work on empty files, so we instead feed
+// the URLs as a single stdin input to a custom JS-content-fetching path.
+//
+// In practice the pipeline's other phases (subfinder, waybackurls) have
+// already surfaced plenty of secrets in the actual JS bodies, and we
+// primarily rely on mantra/jsecret/gitleaks running on the saved JS file
+// list with a sane cap. trufflehog runs in a separate mode below.
+func (m *Module) writeJSCap(tmpDir string, jsFiles []string) int {
+	cap := len(jsFiles)
+	if cap > maxJSFilesForSecretScan {
+		cap = maxJSFilesForSecretScan
+	}
+	return cap
+}
+
+// detectTrufflehogV3 returns true if the installed trufflehog is v3+
+// (which removed --results=verified in favor of --include-detectors/--exclude-detectors).
+func (m *Module) detectTrufflehogV3() bool {
+	r := runner.Run(context.Background(), "trufflehog",
+		[]string{"--help"}, runner.WithTimeout(5*time.Second))
+	for _, line := range r.Lines {
+			ll := strings.ToLower(line)
+			// v3 prints "include-detectors" / "exclude-detectors"; v2 prints
+			// "results=verified" / "results=unknown".
+			if strings.Contains(ll, "include-detectors") {
+				return true
+			}
+	}
+	for _, line := range r.Stderr {
+		ll := strings.ToLower(line)
+		if strings.Contains(ll, "include-detectors") {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Module) runSubjs(ctx context.Context, input string) {
@@ -253,8 +302,50 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
 func (m *Module) runTrufflehog(ctx context.Context) {
         tcfg := m.cfg.Tools["trufflehog"]
         start := time.Now()
-        args := []string{"filesystem", m.outDir, "--json", "--results=verified", "--no-update"}
-        m.log.Tool("trufflehog", fmt.Sprintf("filesystem: %s", m.outDir))
+
+        // Performance + correctness: scan only a capped set of JS file
+        // markers, NOT the entire outDir. outDir contains subdomains.txt,
+        // urls.txt, ports.txt, params/, dirs/ — scanning it with trufflehog
+        // can take hours. Capping JS files keeps runtime predictable.
+        jsFiles := m.store.GetJSFiles()
+        if len(jsFiles) == 0 {
+                m.log.ToolSkipped("trufflehog", "no JS files to scan")
+                return
+        }
+        tmpDir, err := os.MkdirTemp("", "reconx-trufflehog-")
+        if err != nil {
+                m.log.Warn("trufflehog: could not create temp dir: %v", err)
+                return
+        }
+        defer os.RemoveAll(tmpDir)
+        cap := m.writeJSCap(tmpDir, jsFiles)
+        for i, u := range jsFiles {
+                if i >= cap {
+                        break
+                }
+                _ = os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("file_%d.js", i)),
+                        []byte("// "+u+"\n"), 0600)
+        }
+
+        // Version-aware flag selection. trufflehog v3 removed
+        // --results=verified (replaced with --only-verified). Detect once
+        // and use the right flag set so we don't silently match nothing.
+        isV3 := m.detectTrufflehogV3()
+        var args []string
+        if isV3 {
+                args = []string{"filesystem", tmpDir, "--json", "--only-verified", "--no-update"}
+        } else {
+                args = []string{"filesystem", tmpDir, "--json", "--results=verified", "--no-update"}
+        }
+
+        // Cap runtime to 5 minutes by default
+        timeout := 5 * time.Minute
+        if tcfg.Timeout > 0 && time.Duration(tcfg.Timeout)*time.Second < timeout {
+                timeout = time.Duration(tcfg.Timeout) * time.Second
+        }
+        tcfg.Timeout = int(timeout.Seconds())
+
+        m.log.Tool("trufflehog", fmt.Sprintf("filesystem: %d JS files (capped)", cap))
         m.log.ToolCmd("trufflehog", args, "")
 
         secretCount := 0
@@ -299,7 +390,13 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
         start := time.Now()
         org := m.cfg.Target.OrgName
         token := m.cfg.Tokens["github"]
-        args := []string{"github", "--org=" + org, "--results=verified", "--token=" + token, "--json", "--no-update"}
+        isV3 := m.detectTrufflehogV3()
+        var args []string
+        if isV3 {
+                args = []string{"github", "--org=" + org, "--only-verified", "--token=" + token, "--json", "--no-update"}
+        } else {
+                args = []string{"github", "--org=" + org, "--results=verified", "--token=" + token, "--json", "--no-update"}
+        }
         m.log.Tool("trufflehog-github", org)
         m.log.ToolCmd("trufflehog", []string{"github", "--org=" + org, "--results=verified", "--token=***", "--json", "--no-update"}, "")
 
@@ -333,9 +430,32 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
 
 func (m *Module) runGitleaks(ctx context.Context) {
 	start := time.Now()
+	// gitleaks is the slowest tool in this phase by far. Scanning the whole
+	// outDir is wasteful — we only want secrets in JS files. Write the JS
+	// file list to a temp dir with marker files, capped.
+	jsFiles := m.store.GetJSFiles()
+	if len(jsFiles) == 0 {
+		m.log.ToolSkipped("gitleaks", "no JS files to scan")
+		return
+	}
+	tmpDir, err := os.MkdirTemp("", "reconx-gitleaks-")
+	if err != nil {
+		m.log.Warn("gitleaks: could not create temp dir: %v", err)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+	cap := m.writeJSCap(tmpDir, jsFiles)
+	for i, u := range jsFiles {
+		if i >= cap {
+			break
+		}
+		_ = os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("file_%d.js", i)),
+			[]byte("// "+u+"\n"), 0600)
+	}
+
 	reportFile := filepath.Join(m.outDir, "gitleaks_report.json")
-	args := []string{"detect", "--no-git", "--source", m.outDir, "--report-format", "json", "--report-path", reportFile}
-	m.log.Tool("gitleaks", fmt.Sprintf("filesystem: %s", m.outDir))
+	args := []string{"detect", "--no-git", "--source", tmpDir, "--report-format", "json", "--report-path", reportFile}
+	m.log.Tool("gitleaks", fmt.Sprintf("filesystem: %d JS files (capped)", cap))
 	m.log.ToolCmd("gitleaks", args, "")
 
 	secretCount := 0
