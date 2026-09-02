@@ -451,6 +451,15 @@ func (l *Logger) WarnBoard(board *ProgressBoard, format string, args ...interfac
 	l.Warn(format, args...)
 }
 
+// DebugBoard prints a debug line (only if verbose)
+func (l *Logger) DebugBoard(board *ProgressBoard, format string, args ...interface{}) {
+	if board != nil && l.verbose {
+		board.PauseForLog()
+		defer board.ResumeAfterLog()
+	}
+	l.Debug(format, args...)
+}
+
 // FindingBoard prints a permanent finding line
 func (l *Logger) FindingBoard(board *ProgressBoard, severity, name, target string) {
 	if board != nil {

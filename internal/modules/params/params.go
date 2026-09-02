@@ -274,12 +274,16 @@ func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string)
 	m.log.ToolCmd("dalfox", args, fmt.Sprintf("[%d URLs via stdin]", len(urls)))
 	start := time.Now()
 
+	board := m.log.NewProgressBoard()
+	board.Register("dalfox", "analyzing")
+
 	count := 0
 	r := runner.Run(ctx, "dalfox", args,
 		runner.WithStdin(input),
 		runner.WithTimeout(timeout),
-		runner.WithStderrCallback(func(line string) { m.log.Debug("dalfox: %s", line) }),
+		runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "dalfox: %s", line) }),
 		runner.WithLineCallback(func(line string) {
+			board.Heartbeat("dalfox")
 			line = strings.TrimSpace(line)
 			if line == "" || !strings.HasPrefix(line, "{") {
 				return
@@ -298,9 +302,12 @@ func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string)
 				Tool:   "dalfox",
 			})
 			count++
-			m.log.Info("  [Param/dalfox] %s → %s (%s)", targetURL, paramName, method)
+			m.log.InfoBoard(board, "  [Param/dalfox] %s → %s (%s)", targetURL, paramName, method)
 		}),
 	)
+
+	board.Done("dalfox", count)
+	board.Stop()
 
 	if r.IsTimeout() {
 		m.log.ToolTimeout("dalfox", count, timeout)
@@ -342,9 +349,15 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) int {
 	m.log.ToolCmd("getJS", args, "")
 	start := time.Now()
 
+	board := m.log.NewProgressBoard()
+	board.Register("getJS", "extracting URLs")
+
 	r := runner.Run(ctx, "getJS", args,
 		runner.WithTimeout(10*time.Minute),
-		runner.WithStderrCallback(func(line string) { m.log.Debug("getJS: %s", line) }),
+		runner.WithStderrCallback(func(line string) {
+			m.log.DebugBoard(board, "getJS: %s", line)
+			board.Heartbeat("getJS")
+		}),
 	)
 
 	count := 0
@@ -356,12 +369,15 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) int {
 		}
 	}
 
+	board.Done("getJS", count)
+	board.Stop()
+
 	if r.Err != nil && count == 0 {
 		m.log.ToolError("getJS", fmt.Errorf(r.DiagString()), r.Stderr)
 	} else {
 		m.log.ToolDone("getJS", count, time.Since(start))
 		if count > 0 {
-			m.log.Info("getJS: %d new endpoints discovered from JS files", count)
+			m.log.InfoBoard(board, "getJS: %d new endpoints discovered from JS files", count)
 		}
 	}
 	return count
