@@ -39,33 +39,41 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Warn("Could not create params/ directory: %v", err)
 	}
 
-	// Build smart target list: prioritize URLs with existing params, then API endpoints
-	targetURLs := m.buildTargetList(500)
+	// Build smart target lists:
+	// - Dalfox analyzes up to 500 URLs with fast pipeline stream
+	// - Arjun active parameter bruteforce targets top 50 high-priority dynamic/API/auth endpoints
+	dalfoxURLs := m.buildTargetList(500)
+	arjunURLs := m.buildTargetList(50)
 
-	if len(targetURLs) == 0 {
+	if len(dalfoxURLs) == 0 {
 		m.log.Warn("No URLs or live hosts to test for parameters")
 		return nil
 	}
 
 	targetsFile := filepath.Join(paramsDir, "targets.txt")
-	if err := store.SaveRaw(targetsFile, targetURLs); err != nil {
+	if err := store.SaveRaw(targetsFile, dalfoxURLs); err != nil {
 		m.log.Warn("Could not save targets.txt: %v", err)
-		return err
 	}
 
-	m.log.Info("Parameter discovery: %d target endpoints selected", len(targetURLs))
+	arjunTargetsFile := filepath.Join(paramsDir, "arjun_targets.txt")
+	if err := store.SaveRaw(arjunTargetsFile, arjunURLs); err != nil {
+		m.log.Warn("Could not save arjun_targets.txt: %v", err)
+		arjunTargetsFile = targetsFile
+	}
+
+	m.log.Info("Parameter discovery: %d endpoints for stream analysis, %d priority endpoints for Arjun brute-force", len(dalfoxURLs), len(arjunURLs))
 
 	start := time.Now()
 	total := 0
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 
-	// Tool 1: arjun
+	// Tool 1: arjun (active param brute-force on priority endpoints)
 	if runner.IsAvailable("arjun") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n := m.runArjun(ctx, targetsFile, paramsDir)
+			n := m.runArjun(ctx, arjunTargetsFile, paramsDir)
 			mu.Lock()
 			total += n
 			mu.Unlock()
@@ -79,7 +87,7 @@ func (m *Module) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n := m.runDalfox(ctx, targetURLs, paramsDir)
+			n := m.runDalfox(ctx, dalfoxURLs, paramsDir)
 			mu.Lock()
 			total += n
 			mu.Unlock()
@@ -108,7 +116,7 @@ func (m *Module) Run(ctx context.Context) error {
 	return nil
 }
 
-// runArjun runs arjun against a file of target URLs.
+// runArjun runs arjun against a file of high-priority target URLs.
 func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir string) int {
 	tcfg := m.cfg.Tools["arjun"]
 	path := "arjun"
@@ -120,8 +128,8 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir string) in
 	args := []string{
 		"-i", targetsFile,
 		"-oJ", outFile,
-		"-t", "5",
-		"--stable",
+		"-t", "10",
+		"-c", "250",
 	}
 
 	// Inject bug bounty header
@@ -143,19 +151,26 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir string) in
 
 	timeout := time.Duration(tcfg.Timeout) * time.Second
 	if timeout == 0 {
-		timeout = 30 * time.Minute
+		timeout = 15 * time.Minute
 	}
 
-	m.log.Tool("arjun", fmt.Sprintf("%d endpoints → %s", countLines(targetsFile), outFile))
+	numEndpoints := countLines(targetsFile)
+	m.log.Tool("arjun", fmt.Sprintf("%d priority endpoints → %s", numEndpoints, outFile))
 	m.log.ToolCmd("arjun", args, "")
 	start := time.Now()
 
 	board := m.log.NewProgressBoard()
-	board.Register("arjun", fmt.Sprintf("%d endpoints", countLines(targetsFile)))
+	board.Register("arjun", fmt.Sprintf("%d endpoints", numEndpoints))
 
 	r := runner.Run(ctx, path, args,
 		runner.WithTimeout(timeout),
-		runner.WithLineCallback(func(line string) { board.Heartbeat("arjun") }),
+		runner.WithLineCallback(func(line string) {
+			board.Heartbeat("arjun")
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "Valid parameter found") || strings.Contains(line, "[+]") {
+				m.log.Info("  [Param/arjun] %s", line)
+			}
+		}),
 		runner.WithStderrCallback(func(line string) {
 			m.log.Debug("arjun: %s", line)
 			board.Heartbeat("arjun")
