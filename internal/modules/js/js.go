@@ -334,7 +334,7 @@ func (m *Module) runTrufflehogGitHub(ctx context.Context) {
 func (m *Module) runGitleaks(ctx context.Context) {
 	start := time.Now()
 	reportFile := filepath.Join(m.outDir, "gitleaks_report.json")
-	args := []string{"dir", m.outDir, "--report-format", "json", "--report-path", reportFile}
+	args := []string{"detect", "--no-git", "--source", m.outDir, "--report-format", "json", "--report-path", reportFile}
 	m.log.Tool("gitleaks", fmt.Sprintf("filesystem: %s", m.outDir))
 	m.log.ToolCmd("gitleaks", args, "")
 
