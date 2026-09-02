@@ -337,7 +337,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 
 	// ── PHASE 4: URL Discovery ───────────────────────────────────────────────
 	if p.cfg.Phases.URLDiscovery && !(isResume && hasURLs) && ctx.Err() == nil {
-		mod := urls.New(p.cfg, p.store, p.log, p.outDir)
+		mod := urls.New(p.cfg, p.store, p.scope, p.log, p.outDir)
 		if err := mod.Run(ctx); err != nil && err != context.Canceled {
 			p.log.Error("URL discovery phase: %v", err)
 		}

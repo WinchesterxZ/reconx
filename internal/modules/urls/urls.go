@@ -11,6 +11,7 @@ import (
         "time"
 
         "github.com/reconx/reconx/internal/config"
+        "github.com/reconx/reconx/internal/scope"
         "github.com/reconx/reconx/internal/store"
         "github.com/reconx/reconx/pkg/logger"
         "github.com/reconx/reconx/pkg/runner"
@@ -19,6 +20,7 @@ import (
 type Module struct {
         cfg    *config.Config
         store  *store.Store
+        scope  *scope.Filter
         log    *logger.Logger
         outDir string
 
@@ -28,8 +30,8 @@ type Module struct {
         board *logger.ProgressBoard
 }
 
-func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string) *Module {
-        return &Module{cfg: cfg, store: st, log: log, outDir: outDir}
+func New(cfg *config.Config, st *store.Store, sc *scope.Filter, log *logger.Logger, outDir string) *Module {
+        return &Module{cfg: cfg, store: st, scope: sc, log: log, outDir: outDir}
 }
 
 func (m *Module) Run(ctx context.Context) error {
@@ -119,11 +121,19 @@ func (m *Module) Run(ctx context.Context) error {
                 wg.Add(1)
                 go func() {
                         defer wg.Done()
-                        results := t.fn(ctx, input)
-                        mu.Lock()
-                        added := m.store.AddURLs(results)
-                        totalBy[t.name] = added
-                        board.Done(t.name, len(results))
+			results := t.fn(ctx, input)
+			
+			var filtered []string
+			for _, u := range results {
+				if m.scope.IsInScope(u) {
+					filtered = append(filtered, u)
+				}
+			}
+
+			mu.Lock()
+			added := m.store.AddURLs(filtered)
+			totalBy[t.name] = added
+			board.Done(t.name, len(filtered))
                         mu.Unlock()
                 }()
         }
