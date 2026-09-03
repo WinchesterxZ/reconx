@@ -50,115 +50,139 @@ func (m *Module) Run(ctx context.Context) error {
 
         m.log.Debug("nuclei version: %s (path: %s)", runner.Version(nucleiPath), runner.WhichPath(nucleiPath))
 
-        // Build and save target list
-        urls := make([]string, 0, len(hosts))
-        for _, h := range hosts {
-                if u, ok := h.Meta["url"]; ok {
-                        urls = append(urls, u)
-                } else {
-                        urls = append(urls, "https://"+h.Domain)
-                }
-        }
-        targetFile := m.outDir + "/nuclei_targets.txt"
-        if err := store.SaveRaw(targetFile, urls); err != nil {
-                m.log.Error("Could not write nuclei targets: %v", err)
-                return err
-        }
-        m.log.Info("nuclei targets: %d URLs → %s", len(urls), targetFile)
+	// Build target lists separated by WAF status
+	allURLs := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		if u, ok := h.Meta["url"]; ok {
+			allURLs = append(allURLs, u)
+		} else {
+			allURLs = append(allURLs, "https://"+h.Domain)
+		}
+	}
 
-        // Template categories ordered by speed (fast first)
-        categories := []struct {
-                name     string
-                template string
-                timeout  int // per-category timeout in seconds
-        }{
-                {"tech-detect",    "http/technologies",      120},
-                {"exposures",      "http/exposures",          300},
-                {"misconfigs",     "http/misconfiguration",   300},
-                {"takeovers",      "http/takeovers",          180},
-                {"default-logins", "http/default-logins",     300},
-                {"cves",           "http/cves",               600},
-        }
+	dataDir := store.DataDir(m.outDir)
+	wafURLs, nowafURLs := m.store.SplitURLsByWAF(allURLs)
 
-        totalFindings := 0
-        baseArgs := []string{
-                "-l", targetFile,
-                "-jsonl",    // nuclei v3 uses -jsonl (previously -j which is deprecated)
-                "-silent",
-                "-no-color",
-                "-retries", "2",
-                "-timeout", "10",
-                "-rate-limit", "150",
-        }
+	// Save targets in data/
+	targetFileNoWAF := dataDir + "/nuclei_targets_nowaf.txt"
+	targetFileWAF := dataDir + "/nuclei_targets_waf.txt"
+	_ = store.SaveRaw(targetFileNoWAF, nowafURLs)
+	_ = store.SaveRaw(targetFileWAF, wafURLs)
+	_ = store.SaveRaw(dataDir+"/nuclei_targets_all.txt", allURLs)
 
-        // Add custom header if bug bounty program requires it
-        if m.cfg.BugBountyHeader != "" {
-                baseArgs = append(baseArgs, "-H", m.cfg.BugBountyHeader)
-                m.log.Debug("nuclei: adding header %s", m.cfg.BugBountyHeader)
-        }
+	m.log.Info("nuclei targets — non-WAF: %d URLs (fast) | WAF-protected: %d URLs (stealth)",
+		len(nowafURLs), len(wafURLs))
 
-        // Append any config-level nuclei flags
-        baseArgs = append(baseArgs, tcfg.Flags...)
+	// Template categories ordered by speed (fast first)
+	categories := []struct {
+		name     string
+		template string
+		timeout  int // per-category timeout in seconds
+	}{
+		{"tech-detect", "http/technologies", 120},
+		{"exposures", "http/exposures", 300},
+		{"misconfigs", "http/misconfiguration", 300},
+		{"takeovers", "http/takeovers", 180},
+		{"default-logins", "http/default-logins", 300},
+		{"cves", "http/cves", 600},
+	}
 
-        for _, cat := range categories {
-                select {
-                case <-ctx.Done():
-                        m.log.Warn("nuclei: context cancelled — stopping at category %s", cat.name)
-                        return ctx.Err()
-                default:
-                }
+	totalFindings := 0
 
-                args := append(append([]string{}, baseArgs...), "-t", cat.template)
-                m.log.Tool("nuclei:"+cat.name, fmt.Sprintf("%d targets", len(urls)))
-                m.log.ToolCmd("nuclei", args, "")
+	type targetGroup struct {
+		label      string
+		targetFile string
+		count      int
+		rateLimit  string
+		retries    string
+		timeoutSec string
+	}
 
-                catStart := time.Now()
-                catFindings := 0
-                parseErrors := 0
+	groups := []targetGroup{
+		{label: "non-waf", targetFile: targetFileNoWAF, count: len(nowafURLs), rateLimit: "150", retries: "2", timeoutSec: "10"},
+		{label: "waf", targetFile: targetFileWAF, count: len(wafURLs), rateLimit: "30", retries: "1", timeoutSec: "15"},
+	}
 
-                r := runner.Run(ctx, nucleiPath, args,
-                        runner.WithTimeout(time.Duration(cat.timeout)*time.Second),
-                        runner.WithStderrCallback(func(line string) {
-                                // nuclei writes template loading info to stderr — debug only
-                                m.log.Debug("nuclei[%s]: %s", cat.name, util.Truncate(line, 120))
-                        }),
-                        runner.WithLineCallback(func(line string) {
-                                line = strings.TrimSpace(line)
-                                if line == "" || !strings.HasPrefix(line, "{") {
-                                        return
-                                }
-                                f := parseNucleiLine(line)
-                                if f == nil {
-                                        parseErrors++
-                                        return
-                                }
-                                m.store.AddFinding(f)
-                                catFindings++
-                                totalFindings++
-                                m.log.Finding(f.Severity, f.Name, f.Target)
-                        }))
+	for _, g := range groups {
+		if g.count == 0 {
+			continue
+		}
 
-                if r.IsTimeout() {
-                        m.log.ToolTimeout("nuclei:"+cat.name, catFindings,
-                                time.Duration(cat.timeout)*time.Second)
-                } else if r.Err != nil && catFindings == 0 {
-                        // nuclei returns non-zero when no templates match — not always a real error
-                        if len(r.Stderr) > 0 {
-                                m.log.ToolError("nuclei:"+cat.name, fmt.Errorf(r.DiagString()), r.Stderr)
-                        } else {
-                                m.log.Debug("nuclei[%s]: no findings (exit %d)", cat.name, r.ExitCode)
-                                m.log.ToolDone("nuclei:"+cat.name, 0, time.Since(catStart))
-                        }
-                } else {
-                        m.log.ToolDone("nuclei:"+cat.name, catFindings, time.Since(catStart))
-                }
+		m.log.Info("Running nuclei on %s targets (%d endpoints, rate-limit: %s)...", g.label, g.count, g.rateLimit)
 
-                if parseErrors > 0 {
-                        m.log.Warn("nuclei[%s]: %d JSON parse errors — check reconx.log", cat.name, parseErrors)
-                }
-        }
+		baseArgs := []string{
+			"-l", g.targetFile,
+			"-jsonl",
+			"-silent",
+			"-no-color",
+			"-retries", g.retries,
+			"-timeout", g.timeoutSec,
+			"-rate-limit", g.rateLimit,
+		}
 
-        m.log.PhaseComplete("Vulnerability Scanning", totalFindings, time.Since(start))
+		if m.cfg.BugBountyHeader != "" {
+			baseArgs = append(baseArgs, "-H", m.cfg.BugBountyHeader)
+		}
+		baseArgs = append(baseArgs, tcfg.Flags...)
+
+		for _, cat := range categories {
+			select {
+			case <-ctx.Done():
+				m.log.Warn("nuclei: context cancelled — stopping at category %s (%s)", cat.name, g.label)
+				return ctx.Err()
+			default:
+			}
+
+			args := append(append([]string{}, baseArgs...), "-t", cat.template)
+			toolTag := fmt.Sprintf("nuclei:%s:%s", g.label, cat.name)
+			m.log.Tool(toolTag, fmt.Sprintf("%d targets", g.count))
+			m.log.ToolCmd("nuclei", args, "")
+
+			catStart := time.Now()
+			catFindings := 0
+			parseErrors := 0
+
+			r := runner.Run(ctx, nucleiPath, args,
+				runner.WithTimeout(time.Duration(cat.timeout)*time.Second),
+				runner.WithStderrCallback(func(line string) {
+					m.log.Debug("nuclei[%s/%s]: %s", g.label, cat.name, util.Truncate(line, 120))
+				}),
+				runner.WithLineCallback(func(line string) {
+					line = strings.TrimSpace(line)
+					if line == "" || !strings.HasPrefix(line, "{") {
+						return
+					}
+					f := parseNucleiLine(line)
+					if f == nil {
+						parseErrors++
+						return
+					}
+					m.store.AddFinding(f)
+					catFindings++
+					totalFindings++
+					m.log.Finding(f.Severity, f.Name, f.Target)
+				}))
+
+			if r.IsTimeout() {
+				m.log.ToolTimeout(toolTag, catFindings, time.Duration(cat.timeout)*time.Second)
+			} else if r.Err != nil && catFindings == 0 {
+				if len(r.Stderr) > 0 {
+					m.log.ToolError(toolTag, fmt.Errorf(r.DiagString()), r.Stderr)
+				} else {
+					m.log.Debug("nuclei[%s/%s]: no findings (exit %d)", g.label, cat.name, r.ExitCode)
+					m.log.ToolDone(toolTag, 0, time.Since(catStart))
+				}
+			} else {
+				m.log.ToolDone(toolTag, catFindings, time.Since(catStart))
+			}
+
+			if parseErrors > 0 {
+				m.log.Warn("nuclei[%s/%s]: %d JSON parse errors", g.label, cat.name, parseErrors)
+			}
+		}
+	}
+
+	m.log.PhaseComplete("Vulnerability Scanning", totalFindings, time.Since(start))
 
         if totalFindings > 0 {
                 m.logFindingSummary()

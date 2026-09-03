@@ -14,46 +14,60 @@ import (
 
 // ReportData holds everything needed to render the HTML report
 type ReportData struct {
-        ScanID      string
-        Targets     []string
-        StartTime   time.Time
-        Duration    string
-        GeneratedAt string
+	ScanID      string
+	Targets     []string
+	StartTime   time.Time
+	Duration    string
+	GeneratedAt string
 
-        TotalSubdomains int
-        TotalLiveHosts  int
-        TotalPorts      int
-        TotalURLs       int
-        TotalJSFiles    int
-        TotalFindings   int
-        TotalSecrets    int
+	TotalSubdomains int
+	TotalLiveHosts  int
+	TotalPorts      int
+	TotalURLs       int
+	TotalJSFiles    int
+	TotalFindings   int
+	TotalSecrets    int
+	TotalParams     int
+	TotalWAFHosts   int
+	TotalNonWAFHosts int
 
-        Subdomains []store.SubdomainEntry
-        Hosts      []*store.Host
-        Ports      []*store.Port
-        Findings   []*store.Finding
-        Secrets    []*store.Secret
-        URLs       []string // sorted list of all discovered URLs
-        JSFiles    []string // sorted list of all JS file URLs
+	Subdomains []store.SubdomainEntry
+	Hosts      []*store.Host
+	WAFHosts   []*store.Host  // hosts behind WAF
+	NoWAFHosts []*store.Host  // hosts not behind WAF
+	Ports      []*store.Port
+	Findings   []*store.Finding
+	Secrets    []*store.Secret
+	URLs       []string // sorted list of all discovered URLs (capped)
+	JSFiles    []string // sorted list of all JS file URLs
+	Params     []string // discovered parameter keys (all, deduplicated)
+	WAFParams  []string // params from WAF-protected hosts
+	NoWAFParams []string // params from non-WAF hosts
+	WAFResults  []*store.WAFResult // WAF detection results
 
-        CriticalCount int
-        HighCount     int
-        MediumCount   int
-        LowCount      int
+	CriticalCount int
+	HighCount     int
+	MediumCount   int
+	LowCount      int
 
-        // Pre-computed chart data so the template stays simple
-        SeverityChart []chartSlice
-        StatusChart   []chartSlice
-        PortChart     []chartSlice
-        TechChart     []chartSlice
-        SourceChart   []chartSlice
+	HasScreenshots bool
+	ScreenshotDir  string
+	// HostScreenshots maps domain → relative path to screenshot.png
+	HostScreenshots map[string]string
 
-        // Unique values for filter chips
-        AllStatusCodes []int
-        AllTech        []string
-        AllSources     []string
-        AllPorts       []int
-        AllSeverities  []string
+	// Pre-computed chart data so the template stays simple
+	SeverityChart []chartSlice
+	StatusChart   []chartSlice
+	PortChart     []chartSlice
+	TechChart     []chartSlice
+	SourceChart   []chartSlice
+
+	// Unique values for filter chips
+	AllStatusCodes []int
+	AllTech        []string
+	AllSources     []string
+	AllPorts       []int
+	AllSeverities  []string
 }
 
 type chartSlice struct {
@@ -129,7 +143,65 @@ func Generate(st *store.Store, targets []string, outDir string) error {
                 Secrets:         redactedSecrets,
                 URLs:            displayURLs,
                 JSFiles:         jsList,
+                WAFResults:      st.WAFResults,
         }
+
+	// WAF-split hosts
+	for _, h := range hosts {
+		if st.IsWAFProtected(h.Domain) {
+			data.WAFHosts = append(data.WAFHosts, h)
+		} else {
+			data.NoWAFHosts = append(data.NoWAFHosts, h)
+		}
+	}
+	data.TotalWAFHosts = len(data.WAFHosts)
+	data.TotalNonWAFHosts = len(data.NoWAFHosts)
+
+	// Params from files
+	if raw, err := os.ReadFile(filepath.Join(outDir, "params_all.txt")); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				data.Params = append(data.Params, line)
+			}
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(outDir, "params_waf.txt")); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				data.WAFParams = append(data.WAFParams, line)
+			}
+		}
+	}
+	if raw, err := os.ReadFile(filepath.Join(outDir, "params_nowaf.txt")); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if line = strings.TrimSpace(line); line != "" {
+				data.NoWAFParams = append(data.NoWAFParams, line)
+			}
+		}
+	}
+	data.TotalParams = len(data.Params)
+
+	// Screenshot discovery: look for screenshots/<domain>/screenshot.png
+	ssDir := filepath.Join(outDir, "screenshots")
+	data.HostScreenshots = make(map[string]string)
+	if entries, err := os.ReadDir(ssDir); err == nil {
+		data.HasScreenshots = true
+		data.ScreenshotDir = "screenshots"
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			ssPath := filepath.Join(ssDir, e.Name(), "screenshot.png")
+			if _, err := os.Stat(ssPath); err == nil {
+				// Relative path from outDir for HTML src attribute
+				data.HostScreenshots[e.Name()] = "screenshots/" + e.Name() + "/screenshot.png"
+			}
+		}
+		if len(data.HostScreenshots) == 0 {
+			data.HasScreenshots = false
+		}
+	}
+
 
         for _, f := range findings {
                 switch strings.ToLower(f.Severity) {

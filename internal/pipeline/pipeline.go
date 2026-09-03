@@ -308,7 +308,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
         // Each phase writes a marker file when it completes successfully,
         // so we can reliably detect what to skip on --resume.
         	isResume := p.cfg.ResumeDir != ""
-	hasSubdomains := fileHasContent(filepath.Join(p.outDir, "subdomains.txt"))
+	hasSubdomains := fileHasContent(filepath.Join(p.outDir, "all_subs.txt")) || fileHasContent(filepath.Join(p.outDir, "subdomains.txt"))
 	hasAlive     := fileHasContent(filepath.Join(p.outDir, "alive.txt"))
 	hasPorts     := fileHasContent(filepath.Join(p.outDir, "ports.txt"))
 	hasURLs      := fileHasContent(filepath.Join(p.outDir, "urls.txt"))

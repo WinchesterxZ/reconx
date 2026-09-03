@@ -98,10 +98,16 @@ func (m *Module) Run(ctx context.Context) error {
                 m.runMassdns(ctx, m.store.GetSubdomains())
         }
 
-        if err := store.SaveRaw(m.outDir+"/subdomains.txt", m.store.GetSubdomains()); err != nil {
-                m.log.Warn("Failed to save subdomains.txt: %v", err)
-        }
-        return nil
+	subs := m.store.GetSubdomains()
+	if err := store.SaveRaw(m.outDir+"/all_subs.txt", subs); err != nil {
+		m.log.Warn("Failed to save all_subs.txt: %v", err)
+	} else {
+		m.log.Info("all_subs.txt   → %d unique subdomains saved", len(subs))
+	}
+	if err := store.SaveRaw(m.outDir+"/subdomains.txt", subs); err != nil {
+		m.log.Warn("Failed to save subdomains.txt: %v", err)
+	}
+	return nil
 }
 
 func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logger.ProgressBoard) {

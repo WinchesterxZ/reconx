@@ -2,8 +2,11 @@ package js
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +33,7 @@ func New(cfg *config.Config, st *store.Store, log *logger.Logger, outDir string)
 
 func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("JS & Secret Analysis",
-		"Scanning JS files for secrets, API keys, tokens, and hidden endpoints")
+		"JS Download → SecretFinder → Gitleaks → TruffleHog Verification")
 
 	start := time.Now()
 	jsFiles := m.store.GetJSFiles()
@@ -41,99 +44,270 @@ func (m *Module) Run(ctx context.Context) error {
 		return nil
 	}
 
+	dataDir := store.DataDir(m.outDir)
 	m.log.Info("Analyzing %d JavaScript files", len(jsFiles))
-	if err := store.SaveRaw(m.outDir+"/js_files.txt", jsFiles); err != nil {
+	if err := store.SaveRaw(filepath.Join(dataDir, "js_files.txt"), jsFiles); err != nil {
 		m.log.Warn("Could not save js_files.txt: %v", err)
 	}
 
+	// ── Step 1: Download JS files into data/js_downloads/ ───────────────────
+	jsDownloadsDir := filepath.Join(dataDir, "js_downloads")
+	urlMap := m.downloadJSFiles(ctx, jsFiles, jsDownloadsDir)
+
 	input := strings.Join(jsFiles, "\n")
+	var wg sync.WaitGroup
 
-	type jsTool struct {
-		name   string
-		binKey string
-		fn     func(context.Context, string)
+	// ── Step 2: SecretFinder on downloaded files ────────────────────────────
+	if runner.IsAvailable("secretfinder") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runSecretFinder(ctx, jsDownloadsDir, urlMap)
+		}()
+	} else {
+		m.log.ToolSkipped("secretfinder", "not found — install: pip3 install secretfinder")
 	}
 
-	tools := []jsTool{
-		{"subjs",      "subjs",      m.runSubjs},
-		{"mantra",     "mantra",     m.runMantra},
-		{"jsecret",    "jsecret",    m.runJsecret},
-		{"trufflehog", "trufflehog", func(c context.Context, _ string) { m.runTrufflehog(c) }},
-		{"gitleaks",   "gitleaks",   func(c context.Context, _ string) { m.runGitleaks(c) }},
+	// ── Step 3: Gitleaks on downloaded files ────────────────────────────────
+	if runner.IsAvailable("gitleaks") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runGitleaks(ctx, jsDownloadsDir, urlMap)
+		}()
+	} else {
+		m.log.ToolSkipped("gitleaks", "not found — install: brew install gitleaks")
 	}
 
-        var wg sync.WaitGroup
-        anyRan := false
+	// ── Step 4: TruffleHog verification on downloaded files ─────────────────
+	if runner.IsAvailable("trufflehog") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runTrufflehog(ctx, jsDownloadsDir, urlMap)
+		}()
+	} else {
+		m.log.ToolSkipped("trufflehog", "not found — install: brew install trufflehog")
+	}
 
-        for _, t := range tools {
-                t := t
-                if !runner.IsAvailable(t.binKey) {
-                        m.log.ToolSkipped(t.name,
-                                fmt.Sprintf("not in PATH — install: go install github.com/.../%s@latest", t.binKey))
-                        continue
-                }
-                m.log.Debug("%s found at %s (version: %s)", t.name, runner.WhichPath(t.binKey), runner.Version(t.binKey))
-                anyRan = true
-                wg.Add(1)
-                go func() {
-                        defer wg.Done()
-                        t.fn(ctx, input)
-                }()
-        }
+	// ── Complementary tools on URLs ─────────────────────────────────────────
+	if runner.IsAvailable("subjs") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runSubjs(ctx, input)
+		}()
+	}
+	if runner.IsAvailable("mantra") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runMantra(ctx, input)
+		}()
+	}
+	if runner.IsAvailable("jsecret") {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.runJsecret(ctx, input)
+		}()
+	}
 
-        if !anyRan {
-                m.log.Warn("No JS analysis tools available — run: bash install.sh")
-        }
+	wg.Wait()
 
-        wg.Wait()
+	// GitHub org scan: only runs if both github token and --org are set.
+	if m.cfg.Tokens["github"] != "" && m.cfg.Target.OrgName != "" {
+		m.log.Info("GitHub org scan enabled (org=%s) — this may take several minutes", m.cfg.Target.OrgName)
+		m.runTrufflehogGitHub(ctx)
+	}
 
-        // GitHub org scan: only runs if both github token and --org are set.
-        // Heaviest part of the phase — can take many minutes.
-        if m.cfg.Tokens["github"] != "" && m.cfg.Target.OrgName != "" {
-                m.log.Info("GitHub org scan enabled (org=%s) — this may take several minutes", m.cfg.Target.OrgName)
-                m.runTrufflehogGitHub(ctx)
-        }
+	// Save secrets.txt so resume mode can pick up where we left off
+	if secrets := m.store.Secrets; len(secrets) > 0 {
+		lines := make([]string, 0, len(secrets))
+		for _, s := range secrets {
+			lines = append(lines, fmt.Sprintf("[%s] %s — source=%s file=%s", s.Type, s.Value, s.Source, s.File))
+		}
+		if err := store.SaveRaw(m.outDir+"/secrets.txt", lines); err != nil {
+			m.log.Warn("Could not save secrets.txt: %v", err)
+		}
+		_ = store.SaveRaw(filepath.Join(dataDir, "secrets_raw.txt"), lines)
+	}
 
-        // Save secrets.txt so resume mode can pick up where we left off
-        if secrets := m.store.Secrets; len(secrets) > 0 {
-                lines := make([]string, 0, len(secrets))
-                for _, s := range secrets {
-                        lines = append(lines, fmt.Sprintf("[%s] %s — source=%s", s.Type, s.Value, s.Source))
-                }
-                if err := store.SaveRaw(m.outDir+"/secrets.txt", lines); err != nil {
-                        m.log.Warn("Could not save secrets.txt: %v", err)
-                }
-        }
-
-        stats := m.store.Stats()
-        m.log.PhaseComplete("JS & Secret Analysis", stats["secrets"], time.Since(start))
-        return nil
+	stats := m.store.Stats()
+	m.log.PhaseComplete("JS & Secret Analysis", stats["secrets"], time.Since(start))
+	return nil
 }
 
+// downloadJSFiles downloads JS files in parallel to destDir, capped at 300 files.
+// Returns a map of filename -> original URL.
+func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir string) map[string]string {
+	_ = os.MkdirAll(destDir, 0755)
+	urlMap := make(map[string]string)
+	var mu sync.Mutex
 
-// capJSFiles limits how many JS files we feed to secret scanners. With
-// thousands of files, trufflehog/gitleaks can take hours. Capping keeps
-// runtime predictable and still catches the vast majority of secrets.
-const maxJSFilesForSecretScan = 2000
-
-// writeJSToTempDir copies up to maxJSFilesForSecretScan JS file URLs into a
-// temporary directory as <sha>.js files. We don't actually fetch the files
-// (the URL store only contains URLs, not contents); instead we create empty
-// placeholder files so the file count is bounded. Tools that download
-// (trufflehog filesystem) won't work on empty files, so we instead feed
-// the URLs as a single stdin input to a custom JS-content-fetching path.
-//
-// In practice the pipeline's other phases (subfinder, waybackurls) have
-// already surfaced plenty of secrets in the actual JS bodies, and we
-// primarily rely on mantra/jsecret/gitleaks running on the saved JS file
-// list with a sane cap. trufflehog runs in a separate mode below.
-func (m *Module) writeJSCap(tmpDir string, jsFiles []string) int {
 	cap := len(jsFiles)
-	if cap > maxJSFilesForSecretScan {
-		cap = maxJSFilesForSecretScan
+	if cap > 300 {
+		cap = 300
 	}
-	return cap
+
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   5 * time.Second,
+	}
+
+	sem := make(chan struct{}, 25)
+	var wg sync.WaitGroup
+
+	m.log.Info("Downloading %d JS files for deep secret inspection...", cap)
+	downloaded := 0
+
+	for i := 0; i < cap; i++ {
+		u := jsFiles[i]
+		fileName := fmt.Sprintf("js_%d.js", i)
+		filePath := filepath.Join(destDir, fileName)
+
+		wg.Add(1)
+		go func(targetURL, outPath, fName string) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+
+			req, err := http.NewRequestWithContext(ctx, "GET", targetURL, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+			if m.cfg.BugBountyHeader != "" {
+				parts := strings.SplitN(m.cfg.BugBountyHeader, ":", 2)
+				if len(parts) == 2 {
+					req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+				}
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+				return
+			}
+
+			lr := io.LimitReader(resp.Body, 5*1024*1024)
+			data, err := io.ReadAll(lr)
+			if err != nil || len(data) < 10 {
+				return
+			}
+
+			if err := os.WriteFile(outPath, data, 0644); err == nil {
+				mu.Lock()
+				urlMap[fName] = targetURL
+				urlMap[filepath.Base(outPath)] = targetURL
+				downloaded++
+				mu.Unlock()
+			}
+		}(u, filePath, fileName)
+	}
+
+	wg.Wait()
+	m.log.Info("Downloaded %d JS files to %s/", downloaded, destDir)
+
+	if mapData, err := json.MarshalIndent(urlMap, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(destDir, "url_map.json"), mapData, 0644)
+	}
+
+	return urlMap
 }
+
+// runSecretFinder scans downloaded JS files for secrets using SecretFinder.
+func (m *Module) runSecretFinder(ctx context.Context, jsDir string, urlMap map[string]string) {
+	start := time.Now()
+	entries, err := os.ReadDir(jsDir)
+	if err != nil || len(entries) == 0 {
+		return
+	}
+
+	var files []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".js") {
+			files = append(files, filepath.Join(jsDir, e.Name()))
+		}
+	}
+	if len(files) == 0 {
+		return
+	}
+
+	m.log.Tool("secretfinder", fmt.Sprintf("%d JS files", len(files)))
+	board := m.log.NewProgressBoard()
+	board.Register("secretfinder", fmt.Sprintf("%d files", len(files)))
+
+	secretCount := 0
+	var mu sync.Mutex
+	sem := make(chan struct{}, 10)
+	var wg sync.WaitGroup
+
+	for _, fPath := range files {
+		fName := filepath.Base(fPath)
+		origURL := urlMap[fName]
+		if origURL == "" {
+			origURL = fName
+		}
+
+		wg.Add(1)
+		go func(path, targetURL string) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			case sem <- struct{}{}:
+			}
+			defer func() { <-sem }()
+
+			board.Heartbeat("secretfinder")
+			args := []string{"-i", path, "-o", "cli"}
+			r := runner.Run(ctx, "secretfinder", args, runner.WithTimeout(30*time.Second))
+			for _, line := range r.Lines {
+				line = strings.TrimSpace(line)
+				if strings.Contains(line, "->") {
+					parts := strings.SplitN(line, "->", 2)
+					if len(parts) == 2 {
+						secType := strings.TrimSpace(parts[0])
+						secVal := strings.TrimSpace(parts[1])
+						if secVal != "" && secType != "" {
+							mu.Lock()
+							m.store.AddSecret(&store.Secret{
+								Type:   secType,
+								Value:  util.Truncate(secVal, 200),
+								Source: "secretfinder",
+								File:   targetURL,
+							})
+							secretCount++
+							m.log.Secret(secType, "secretfinder", util.Truncate(secVal, 60))
+							m.log.Finding("high", "Secret ("+secType+")", targetURL)
+							mu.Unlock()
+						}
+					}
+				}
+			}
+		}(fPath, origURL)
+	}
+
+	wg.Wait()
+	board.Done("secretfinder", secretCount)
+	board.Stop()
+	m.log.ToolDone("secretfinder", secretCount, time.Since(start))
+}
+
+
+
 
 // detectTrufflehogV3 returns true if the installed trufflehog is v3+
 // (which removed --results=verified in favor of --include-detectors/--exclude-detectors).
@@ -299,168 +473,130 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
         }
 }
 
-func (m *Module) runTrufflehog(ctx context.Context) {
-        tcfg := m.cfg.Tools["trufflehog"]
-        start := time.Now()
+func (m *Module) runTrufflehog(ctx context.Context, jsDir string, urlMap map[string]string) {
+	tcfg := m.cfg.Tools["trufflehog"]
+	start := time.Now()
 
-        // Performance + correctness: scan only a capped set of JS file
-        // markers, NOT the entire outDir. outDir contains subdomains.txt,
-        // urls.txt, ports.txt, params/, dirs/ — scanning it with trufflehog
-        // can take hours. Capping JS files keeps runtime predictable.
-        jsFiles := m.store.GetJSFiles()
-        if len(jsFiles) == 0 {
-                m.log.ToolSkipped("trufflehog", "no JS files to scan")
-                return
-        }
-        tmpDir, err := os.MkdirTemp("", "reconx-trufflehog-")
-        if err != nil {
-                m.log.Warn("trufflehog: could not create temp dir: %v", err)
-                return
-        }
-        defer os.RemoveAll(tmpDir)
-        cap := m.writeJSCap(tmpDir, jsFiles)
-        for i, u := range jsFiles {
-                if i >= cap {
-                        break
-                }
-                _ = os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("file_%d.js", i)),
-                        []byte("// "+u+"\n"), 0600)
-        }
+	isV3 := m.detectTrufflehogV3()
+	var args []string
+	if isV3 {
+		args = []string{"filesystem", jsDir, "--json", "--only-verified", "--no-update"}
+	} else {
+		args = []string{"filesystem", jsDir, "--json", "--results=verified", "--no-update"}
+	}
 
-        // Version-aware flag selection. trufflehog v3 removed
-        // --results=verified (replaced with --only-verified). Detect once
-        // and use the right flag set so we don't silently match nothing.
-        isV3 := m.detectTrufflehogV3()
-        var args []string
-        if isV3 {
-                args = []string{"filesystem", tmpDir, "--json", "--only-verified", "--no-update"}
-        } else {
-                args = []string{"filesystem", tmpDir, "--json", "--results=verified", "--no-update"}
-        }
+	timeout := 10 * time.Minute
+	if tcfg.Timeout > 0 {
+		timeout = time.Duration(tcfg.Timeout) * time.Second
+	}
 
-        // Cap runtime to 5 minutes by default
-        timeout := 5 * time.Minute
-        if tcfg.Timeout > 0 && time.Duration(tcfg.Timeout)*time.Second < timeout {
-                timeout = time.Duration(tcfg.Timeout) * time.Second
-        }
-        tcfg.Timeout = int(timeout.Seconds())
+	m.log.Tool("trufflehog", "verifying secrets against live APIs")
+	m.log.ToolCmd("trufflehog", args, "")
 
-        m.log.Tool("trufflehog", fmt.Sprintf("filesystem: %d JS files (capped)", cap))
-        m.log.ToolCmd("trufflehog", args, "")
+	secretCount := 0
+	r := runner.Run(ctx, tcfg.Path, args,
+		runner.WithTimeout(timeout),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("trufflehog: %s", line) }),
+		runner.WithLineCallback(func(line string) {
+			if !strings.Contains(line, `"Verified":true`) && !strings.Contains(line, `"verified":true`) {
+				return
+			}
+			t := util.JsonStr(line, "DetectorName")
+			if t == "" {
+				t = util.JsonStr(line, "detector_name")
+			}
+			if t == "" {
+				t = "unknown"
+			}
+			raw := util.JsonStr(line, "Raw")
+			if raw == "" {
+				raw = util.Truncate(line, 200)
+			}
+			sourceFile := util.JsonStr(line, "SourceName")
+			if sourceFile == "" {
+				sourceFile = util.JsonStr(line, "File")
+			}
+			origURL := filepath.Base(sourceFile)
+			if u, ok := urlMap[origURL]; ok {
+				origURL = u
+			}
 
-        secretCount := 0
-        r := runner.Run(ctx, tcfg.Path, args,
-                runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
-                runner.WithStderrCallback(func(line string) { m.log.Debug("trufflehog: %s", line) }),
-                runner.WithLineCallback(func(line string) {
-                        if !strings.Contains(line, `"Verified":true`) && !strings.Contains(line, `"verified":true`) {
-                                return
-                        }
-                        t := util.JsonStr(line, "DetectorName")
-                        if t == "" {
-                                t = util.JsonStr(line, "detector_name")
-                        }
-                        if t == "" {
-                                t = "unknown"
-                        }
-                        raw := util.JsonStr(line, "Raw")
-                        if raw == "" {
-                                raw = util.Truncate(line, 200)
-                        }
-                        m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(raw, 200), Source: "trufflehog"})
-                        secretCount++
-                        m.log.Secret(t, "trufflehog (verified)", util.Truncate(raw, 60))
-                        m.log.Finding("critical", "Verified Secret: "+t, "trufflehog")
-                }))
+			m.store.AddSecret(&store.Secret{
+				Type:   t + " (VERIFIED)",
+				Value:  util.Truncate(raw, 200),
+				Source: "trufflehog",
+				File:   origURL,
+			})
+			secretCount++
+			m.log.Secret(t, "trufflehog (VERIFIED)", util.Truncate(raw, 60))
+			m.log.Finding("critical", "Verified Secret: "+t, origURL)
+		}))
 
-        if r.IsTimeout() {
-                m.log.ToolTimeout("trufflehog", secretCount, time.Duration(tcfg.Timeout)*time.Second)
-        } else if r.Err != nil && secretCount == 0 {
-                m.log.ToolError("trufflehog", fmt.Errorf(r.DiagString()), r.Stderr)
-        } else {
-                m.log.ToolDone("trufflehog", secretCount, time.Since(start))
-                m.log.Debug("trufflehog: processed %d scan lines, %d verified secrets", len(r.Lines), secretCount)
-        }
+	if r.IsTimeout() {
+		m.log.ToolTimeout("trufflehog", secretCount, timeout)
+	} else if r.Err != nil && secretCount == 0 {
+		m.log.ToolError("trufflehog", fmt.Errorf(r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("trufflehog", secretCount, time.Since(start))
+		m.log.Debug("trufflehog: processed %d scan lines, %d verified secrets", len(r.Lines), secretCount)
+	}
 }
 
 func (m *Module) runTrufflehogGitHub(ctx context.Context) {
-        if !runner.IsAvailable("trufflehog") {
-                return
-        }
-        start := time.Now()
-        org := m.cfg.Target.OrgName
-        token := m.cfg.Tokens["github"]
-        isV3 := m.detectTrufflehogV3()
-        var args []string
-        if isV3 {
-                args = []string{"github", "--org=" + org, "--only-verified", "--token=" + token, "--json", "--no-update"}
-        } else {
-                args = []string{"github", "--org=" + org, "--results=verified", "--token=" + token, "--json", "--no-update"}
-        }
-        m.log.Tool("trufflehog-github", org)
-        m.log.ToolCmd("trufflehog", []string{"github", "--org=" + org, "--results=verified", "--token=***", "--json", "--no-update"}, "")
+	if !runner.IsAvailable("trufflehog") {
+		return
+	}
+	start := time.Now()
+	org := m.cfg.Target.OrgName
+	token := m.cfg.Tokens["github"]
+	isV3 := m.detectTrufflehogV3()
+	var args []string
+	if isV3 {
+		args = []string{"github", "--org=" + org, "--only-verified", "--token=" + token, "--json", "--no-update"}
+	} else {
+		args = []string{"github", "--org=" + org, "--results=verified", "--token=" + token, "--json", "--no-update"}
+	}
+	m.log.Tool("trufflehog-github", org)
+	m.log.ToolCmd("trufflehog", []string{"github", "--org=" + org, "--results=verified", "--token=***", "--json", "--no-update"}, "")
 
-        secretCount := 0
-        r := runner.Run(ctx, "trufflehog", args,
-                runner.WithEnv([]string{"GITHUB_TOKEN=" + token}),
-                runner.WithTimeout(10*time.Minute),
-                runner.WithStderrCallback(func(line string) { m.log.Debug("trufflehog-github: %s", line) }),
-                runner.WithLineCallback(func(line string) {
-                        if !strings.Contains(line, `"Verified":true`) {
-                                return
-                        }
-                        t := util.JsonStr(line, "DetectorName")
-                        if t == "" {
-                                t = "github-secret"
-                        }
-                        m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(line, 200), Source: "trufflehog-github"})
-                        secretCount++
-                        m.log.Secret(t, "trufflehog-github", org)
-                        m.log.Finding("critical", "Verified GitHub Secret: "+t, org)
-                }))
+	secretCount := 0
+	r := runner.Run(ctx, "trufflehog", args,
+		runner.WithEnv([]string{"GITHUB_TOKEN=" + token}),
+		runner.WithTimeout(10*time.Minute),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("trufflehog-github: %s", line) }),
+		runner.WithLineCallback(func(line string) {
+			if !strings.Contains(line, `"Verified":true`) {
+				return
+			}
+			t := util.JsonStr(line, "DetectorName")
+			if t == "" {
+				t = "github-secret"
+			}
+			m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(line, 200), Source: "trufflehog-github"})
+			secretCount++
+			m.log.Secret(t, "trufflehog-github", org)
+			m.log.Finding("critical", "Verified GitHub Secret: "+t, org)
+		}))
 
-        if r.IsTimeout() {
-                m.log.ToolTimeout("trufflehog-github", secretCount, 10*time.Minute)
-        } else if r.Err != nil && secretCount == 0 {
-                m.log.ToolError("trufflehog-github", fmt.Errorf(r.DiagString()), r.Stderr)
-        } else {
-                m.log.ToolDone("trufflehog-github", secretCount, time.Since(start))
-        }
+	if r.IsTimeout() {
+		m.log.ToolTimeout("trufflehog-github", secretCount, 10*time.Minute)
+	} else if r.Err != nil && secretCount == 0 {
+		m.log.ToolError("trufflehog-github", fmt.Errorf(r.DiagString()), r.Stderr)
+	} else {
+		m.log.ToolDone("trufflehog-github", secretCount, time.Since(start))
+	}
 }
 
-func (m *Module) runGitleaks(ctx context.Context) {
+func (m *Module) runGitleaks(ctx context.Context, jsDir string, urlMap map[string]string) {
 	start := time.Now()
-	// gitleaks is the slowest tool in this phase by far. Scanning the whole
-	// outDir is wasteful — we only want secrets in JS files. Write the JS
-	// file list to a temp dir with marker files, capped.
-	jsFiles := m.store.GetJSFiles()
-	if len(jsFiles) == 0 {
-		m.log.ToolSkipped("gitleaks", "no JS files to scan")
-		return
-	}
-	tmpDir, err := os.MkdirTemp("", "reconx-gitleaks-")
-	if err != nil {
-		m.log.Warn("gitleaks: could not create temp dir: %v", err)
-		return
-	}
-	defer os.RemoveAll(tmpDir)
-	cap := m.writeJSCap(tmpDir, jsFiles)
-	for i, u := range jsFiles {
-		if i >= cap {
-			break
-		}
-		_ = os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("file_%d.js", i)),
-			[]byte("// "+u+"\n"), 0600)
-	}
-
-	reportFile := filepath.Join(m.outDir, "gitleaks_report.json")
-	args := []string{"detect", "--no-git", "--source", tmpDir, "--report-format", "json", "--report-path", reportFile}
-	m.log.Tool("gitleaks", fmt.Sprintf("filesystem: %d JS files (capped)", cap))
+	reportFile := filepath.Join(store.DataDir(m.outDir), "gitleaks_report.json")
+	args := []string{"detect", "--no-git", "--source", jsDir, "--report-format", "json", "--report-path", reportFile}
+	m.log.Tool("gitleaks", "scanning downloaded JS files")
 	m.log.ToolCmd("gitleaks", args, "")
 
 	secretCount := 0
 	r := runner.Run(ctx, "gitleaks", args,
-		runner.WithTimeout(5*time.Minute),
+		runner.WithTimeout(10*time.Minute),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("gitleaks: %s", line) }),
 	)
 
@@ -480,21 +616,25 @@ func (m *Module) runGitleaks(ctx context.Context) {
 				if secType == "" {
 					secType = "Potential Secret"
 				}
+				origFile := filepath.Base(f.File)
+				if u, ok := urlMap[origFile]; ok {
+					origFile = u
+				}
 				m.store.AddSecret(&store.Secret{
 					Type:   secType,
 					Value:  util.Truncate(f.Secret, 200),
 					Source: "gitleaks",
-					File:   filepath.Base(f.File),
+					File:   origFile,
 				})
 				secretCount++
 				m.log.Secret(secType, "gitleaks", util.Truncate(f.Secret, 60))
-				m.log.Finding("high", "Secret ("+secType+")", f.File)
+				m.log.Finding("high", "Secret ("+secType+")", origFile)
 			}
 		}
 	}
 
 	if r.IsTimeout() {
-		m.log.ToolTimeout("gitleaks", secretCount, 5*time.Minute)
+		m.log.ToolTimeout("gitleaks", secretCount, 10*time.Minute)
 	} else if r.Err != nil && secretCount == 0 && !util.FileExists(reportFile) {
 		m.log.ToolError("gitleaks", fmt.Errorf(r.DiagString()), r.Stderr)
 	} else {
