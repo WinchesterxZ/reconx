@@ -145,12 +145,26 @@ func (m *Module) Run(ctx context.Context) error {
         m.log.Info("URL deduplication: %d total unique URLs", total)
         m.classifyAndSave()
 
-        if err := store.SaveRaw(m.outDir+"/urls.txt", m.store.GetURLs()); err != nil {
-                m.log.Warn("Could not save urls.txt: %v", err)
-        }
+	if err := store.SaveRaw(m.outDir+"/urls.txt", m.store.GetURLs()); err != nil {
+		m.log.Warn("Could not save urls.txt: %v", err)
+	}
 
-        m.log.PhaseComplete("URL Discovery", total, time.Since(start))
-        return nil
+	// WAF-split URL files
+	allURLs := m.store.GetURLs()
+	wafURLs, nowafURLs := m.store.SplitURLsByWAF(allURLs)
+	if err := store.SaveRaw(m.outDir+"/urls_waf.txt", wafURLs); err != nil {
+		m.log.Warn("Could not save urls_waf.txt: %v", err)
+	} else {
+		m.log.Info("urls_waf.txt   → %d URLs (WAF-protected hosts)", len(wafURLs))
+	}
+	if err := store.SaveRaw(m.outDir+"/urls_nowaf.txt", nowafURLs); err != nil {
+		m.log.Warn("Could not save urls_nowaf.txt: %v", err)
+	} else {
+		m.log.Info("urls_nowaf.txt → %d URLs (non-WAF hosts)", len(nowafURLs))
+	}
+
+	m.log.PhaseComplete("URL Discovery", total, time.Since(start))
+	return nil
 }
 
 func (m *Module) runWayback(ctx context.Context, input string) []string {

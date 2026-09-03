@@ -81,6 +81,7 @@ func (m *Module) Run(ctx context.Context) error {
 	// Knowing whether a WAF is present lets us tune threads/timing in later
 	// phases to avoid getting blocked or rate-limited.
 	m.runWAFDetection(ctx)
+	m.saveAliveWAFSplit() // write live_waf.txt / live_nowaf.txt
 
 	// ── TLS / Certificate info ─────────────────────────────────────────────
 	// SANs from TLS certs often reveal subdomains not found by passive tools.
@@ -273,21 +274,39 @@ func (m *Module) runCurlFallback(ctx context.Context, subs []string) error {
 }
 
 func (m *Module) saveAlive() error {
-        hosts := m.store.GetHosts()
-        lines := make([]string, 0, len(hosts))
-        for _, h := range hosts {
-                if url, ok := h.Meta["url"]; ok {
-                        lines = append(lines, url)
-                } else {
-                        lines = append(lines, "https://"+h.Domain)
-                }
-        }
-        if err := store.SaveRaw(m.outDir+"/alive.txt", lines); err != nil {
-                m.log.Warn("Failed to save alive.txt: %v", err)
-                return err
-        }
-        m.log.Debug("Saved alive.txt (%d entries)", len(lines))
-        return nil
+	hosts := m.store.GetHosts()
+	lines := make([]string, 0, len(hosts))
+	for _, h := range hosts {
+		if url, ok := h.Meta["url"]; ok {
+			lines = append(lines, url)
+		} else {
+			lines = append(lines, "https://"+h.Domain)
+		}
+	}
+	if err := store.SaveRaw(m.outDir+"/alive.txt", lines); err != nil {
+		m.log.Warn("Failed to save alive.txt: %v", err)
+		return err
+	}
+	m.log.Debug("Saved alive.txt (%d entries)", len(lines))
+	return nil
+}
+
+// saveAliveWAFSplit writes live_waf.txt and live_nowaf.txt after WAF detection.
+// Called from Run() after runWAFDetection() so WAFResults are populated.
+func (m *Module) saveAliveWAFSplit() {
+	wafHosts := m.store.GetWAFHosts()
+	nowafHosts := m.store.GetNonWAFHosts()
+
+	if err := store.SaveRaw(m.outDir+"/live_waf.txt", wafHosts); err != nil {
+		m.log.Warn("Failed to save live_waf.txt: %v", err)
+	} else {
+		m.log.Info("live_waf.txt   → %d WAF-protected hosts", len(wafHosts))
+	}
+	if err := store.SaveRaw(m.outDir+"/live_nowaf.txt", nowafHosts); err != nil {
+		m.log.Warn("Failed to save live_nowaf.txt: %v", err)
+	} else {
+		m.log.Info("live_nowaf.txt → %d non-WAF hosts", len(nowafHosts))
+	}
 }
 
 // parseHTTPXLine parses a httpx -json output line
@@ -428,7 +447,7 @@ func (m *Module) runWAFDetection(ctx context.Context) {
                 return
         }
 
-        outFile := m.outDir + "/waf_results.txt"
+        outFile := store.DataDir(m.outDir) + "/wafw00f.txt"
         args := []string{"-i", aliveFile, "-o", outFile, "-a"}
         timeout := time.Duration(tcfg.Timeout) * time.Second
         if timeout == 0 {

@@ -34,19 +34,20 @@ type ToolConfig struct {
 
 // PhasesConfig controls which phases to run
 type PhasesConfig struct {
-        SubdomainEnum bool
-        AliveCheck    bool
-        PortScan      bool
-        URLDiscovery  bool
-        JSAnalysis    bool
-        VulnScan      bool
-        Report        bool
+	SubdomainEnum bool
+	AliveCheck    bool
+	PortScan      bool
+	URLDiscovery  bool
+	JSAnalysis    bool
+	VulnScan      bool
+	Report        bool
 
-        // New phases (Batch 1+)
-        DirFuzz    bool // Phase 4.7 — Directory & content fuzzing (feroxbuster/ffuf/dirsearch)
-        Params     bool // Phase 5   — Hidden parameter discovery (arjun)
-        CloudEnum  bool // Phase 6   — Cloud/S3 bucket enumeration
-        CORS       bool // Phase 6   — CORS misconfiguration scan
+	// New phases (Batch 1+)
+	DirFuzz     bool // Phase 4.7 — Directory & content fuzzing (feroxbuster/ffuf/dirsearch)
+	Params      bool // Phase 5   — Hidden parameter discovery (arjun)
+	CloudEnum   bool // Phase 6   — Cloud/S3 bucket enumeration
+	CORS        bool // Phase 6   — CORS misconfiguration scan
+	Screenshots bool // Phase 2.5 — gowitness screenshots of live hosts (optional)
 }
 
 // OutputConfig controls output behavior

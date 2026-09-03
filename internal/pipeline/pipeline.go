@@ -20,6 +20,7 @@ import (
         "github.com/reconx/reconx/internal/modules/params"
         "github.com/reconx/reconx/internal/modules/portscan"
         "github.com/reconx/reconx/internal/modules/report"
+        "github.com/reconx/reconx/internal/modules/screenshot"
         "github.com/reconx/reconx/internal/modules/subdomain"
         "github.com/reconx/reconx/internal/modules/urls"
         "github.com/reconx/reconx/internal/modules/vuln"
@@ -335,6 +336,14 @@ func (p *Pipeline) Run(ctx context.Context) error {
 			p.log.Error("Alive check phase: %v", err)
 		}
 		p.printInterim("After alive check")
+	}
+
+	// ── PHASE 2.5: Screenshots (optional) ───────────────────────────────────
+	if p.cfg.Phases.Screenshots && ctx.Err() == nil {
+		mod := screenshot.New(p.cfg, p.store, p.log, p.outDir)
+		if err := mod.Run(ctx); err != nil && err != context.Canceled {
+			p.log.Error("Screenshots phase: %v", err)
+		}
 	}
 
 	// ── PHASE 3: Port Scanning ───────────────────────────────────────────────

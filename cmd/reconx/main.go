@@ -70,6 +70,7 @@ func main() {
                 skipParams  = flag.Bool("skip-params", false, "Explicitly skip parameter discovery")
                 skipCloud   = flag.Bool("skip-cloud",  false, "Skip cloud/S3 bucket enumeration")
                 skipCORS    = flag.Bool("skip-cors",   false, "Skip CORS misconfiguration scanning")
+                screenshots = flag.Bool("screenshots", false, "Enable screenshots of all live hosts (requires gowitness)")
 
                 // Timeout control
                 // --no-timeout removes ALL timeouts from every tool.
@@ -280,6 +281,7 @@ func main() {
         if *skipParams  { cfg.Phases.Params = false }
         if *skipCloud   { cfg.Phases.CloudEnum = false }
         if *skipCORS    { cfg.Phases.CORS = false }
+        if *screenshots { cfg.Phases.Screenshots = true }
 
         // --no-timeout: set every single tool timeout to 0 (no deadline)
         // Each tool runs until it finishes naturally.

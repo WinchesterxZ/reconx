@@ -1,13 +1,14 @@
 package store
 
 import (
-        "encoding/json"
-        "fmt"
-        "os"
-        "path/filepath"
-        "sort"
-        "sync"
-        "time"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
 )
 
 // Host represents a discovered live host
@@ -387,6 +388,15 @@ func (s *Store) AddParamFinding(p *ParamFinding) {
 	s.ParamResults = append(s.ParamResults, p)
 }
 
+// GetParamResults returns all discovered parameter findings
+func (s *Store) GetParamResults() []*ParamFinding {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]*ParamFinding, len(s.ParamResults))
+	copy(out, s.ParamResults)
+	return out
+}
+
 // Stats returns a summary map
 func (s *Store) Stats() map[string]int {
 	s.mu.RLock()
@@ -502,13 +512,111 @@ func (s *Store) AddSubdomainsFromSourcePreserve(subs []string, source string) in
 
 // SaveRaw saves a plain text list to a file
 func SaveRaw(path string, lines []string) error {
-        f, err := os.Create(path)
-        if err != nil {
-                return err
-        }
-        defer f.Close()
-        for _, l := range lines {
-                fmt.Fprintln(f, l)
-        }
-        return nil
+	if dir := filepath.Dir(path); dir != "" {
+		_ = os.MkdirAll(dir, 0755)
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for _, l := range lines {
+		fmt.Fprintln(f, l)
+	}
+	return nil
 }
+
+// DataDir returns the path to the raw tool-output directory (outDir/data/).
+// All individual tool outputs should be written here to keep the top-level
+// scan directory clean. The directory is created on first call.
+func DataDir(outDir string) string {
+	d := filepath.Join(outDir, "data")
+	_ = os.MkdirAll(d, 0755)
+	return d
+}
+
+// ── WAF-split helpers ────────────────────────────────────────────────────────
+
+// IsWAFProtected returns true if wafw00f detected a WAF on the given host URL/domain.
+func (s *Store) IsWAFProtected(hostOrURL string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Normalise: strip protocol and path
+	clean := hostOrURL
+	for _, p := range []string{"https://", "http://"} {
+		clean = strings.TrimPrefix(clean, p)
+	}
+	if idx := strings.IndexAny(clean, "/?#"); idx != -1 {
+		clean = clean[:idx]
+	}
+	// Strip port
+	if idx := strings.LastIndex(clean, ":"); idx > 0 {
+		if _, err := fmt.Sscanf(clean[idx+1:], "%d", new(int)); err == nil {
+			clean = clean[:idx]
+		}
+	}
+	clean = strings.ToLower(strings.TrimSpace(clean))
+	for _, w := range s.WAFResults {
+		if !w.Detected {
+			continue
+		}
+		wHost := strings.ToLower(strings.TrimSpace(w.Host))
+		// Strip protocol from stored host too
+		for _, p := range []string{"https://", "http://"} {
+			wHost = strings.TrimPrefix(wHost, p)
+		}
+		if idx := strings.IndexAny(wHost, "/?#"); idx != -1 {
+			wHost = wHost[:idx]
+		}
+		if wHost == clean || strings.HasSuffix(clean, "."+wHost) || strings.HasSuffix(wHost, "."+clean) {
+			return true
+		}
+	}
+	return false
+}
+
+// GetWAFHosts returns live host URLs that are behind a WAF.
+func (s *Store) GetWAFHosts() []string {
+	hosts := s.GetHosts()
+	var out []string
+	for _, h := range hosts {
+		url := h.Meta["url"]
+		if url == "" {
+			url = "https://" + h.Domain
+		}
+		if s.IsWAFProtected(h.Domain) {
+			out = append(out, url)
+		}
+	}
+	return out
+}
+
+// GetNonWAFHosts returns live host URLs that are NOT behind a WAF.
+func (s *Store) GetNonWAFHosts() []string {
+	hosts := s.GetHosts()
+	var out []string
+	for _, h := range hosts {
+		url := h.Meta["url"]
+		if url == "" {
+			url = "https://" + h.Domain
+		}
+		if !s.IsWAFProtected(h.Domain) {
+			out = append(out, url)
+		}
+	}
+	return out
+}
+
+// SplitURLsByWAF partitions a URL list into (waf, nowaf) slices
+// based on whether the URL's host is WAF-protected.
+func (s *Store) SplitURLsByWAF(urls []string) (waf, nowaf []string) {
+	for _, u := range urls {
+		if s.IsWAFProtected(u) {
+			waf = append(waf, u)
+		} else {
+			nowaf = append(nowaf, u)
+		}
+	}
+	return
+}
+
