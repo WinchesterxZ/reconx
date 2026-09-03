@@ -117,32 +117,104 @@ func Generate(st *store.Store, targets []string, outDir string) error {
                 displayURLs = displayURLs[:5000]
         }
 
-        // Redact secret values before they go into the HTML report. The
-        // raw secrets are still in results.json (chmod 0600) but the HTML
-        // report is meant to be shared with the team / client — showing
-        // raw API keys there is a leak. We keep the type, source, and a
-        // short fingerprint so the user can still find the row.
-        redactedSecrets := redactSecrets(st.Secrets)
+	allSecrets := st.Secrets
+	if len(allSecrets) == 0 {
+		if raw, err := os.ReadFile(filepath.Join(outDir, "secrets.txt")); err == nil {
+			for _, line := range strings.Split(string(raw), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || !strings.HasPrefix(line, "[") {
+					continue
+				}
+				endBracket := strings.Index(line, "]")
+				if endBracket == -1 {
+					continue
+				}
+				secType := line[1:endBracket]
+				rest := strings.TrimSpace(line[endBracket+1:])
+				var val, src, file string
+				parts := strings.Split(rest, " — ")
+				if len(parts) >= 1 {
+					val = parts[0]
+				}
+				if len(parts) >= 2 {
+					for _, mp := range strings.Split(parts[1], " ") {
+						if strings.HasPrefix(mp, "source=") {
+							src = strings.TrimPrefix(mp, "source=")
+						} else if strings.HasPrefix(mp, "file=") {
+							file = strings.TrimPrefix(mp, "file=")
+						}
+					}
+				}
+				allSecrets = append(allSecrets, &store.Secret{
+					Type:   secType,
+					Value:  val,
+					Source: src,
+					File:   file,
+				})
+			}
+		}
+	}
 
-        data := &ReportData{
-                ScanID:          st.ScanID,
-                Targets:         targets,
-                StartTime:       st.StartTime,
-                Duration:        time.Since(st.StartTime).Round(time.Second).String(),
-                GeneratedAt:     time.Now().Format("2006-01-02 15:04:05 UTC"),
-                TotalSubdomains: len(subs),
-                TotalLiveHosts:  len(hosts),
-                TotalPorts:      len(ports),
-                TotalURLs:       len(urlList),
-                TotalJSFiles:    len(jsList),
-                TotalFindings:   len(findings),
-                TotalSecrets:    len(st.Secrets),
-                Subdomains:      subs,
-                Hosts:           hosts,
-                Ports:           ports,
-                Findings:        findings,
-                Secrets:         redactedSecrets,
-                URLs:            displayURLs,
+	allFindings := findings
+	if len(allFindings) == 0 {
+		if raw, err := os.ReadFile(filepath.Join(outDir, "findings.txt")); err == nil {
+			for _, line := range strings.Split(string(raw), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || !strings.HasPrefix(line, "[") {
+					continue
+				}
+				endBracket := strings.Index(line, "]")
+				if endBracket == -1 {
+					continue
+				}
+				sev := strings.ToLower(line[1:endBracket])
+				rest := strings.TrimSpace(line[endBracket+1:])
+				parts := strings.Split(rest, " — ")
+				name := rest
+				target := ""
+				tmpl := ""
+				if len(parts) == 2 {
+					name = parts[0]
+					rem := parts[1]
+					if startParen := strings.LastIndex(rem, " ("); startParen != -1 && strings.HasSuffix(rem, ")") {
+						target = rem[:startParen]
+						tmpl = rem[startParen+2 : len(rem)-1]
+					} else {
+						target = rem
+					}
+				}
+				allFindings = append(allFindings, &store.Finding{
+					Name:     name,
+					Severity: sev,
+					Target:   target,
+					Template: tmpl,
+				})
+			}
+		}
+	}
+
+	// Redact secret values before they go into the HTML report.
+	redactedSecrets := redactSecrets(allSecrets)
+
+	data := &ReportData{
+		ScanID:          st.ScanID,
+		Targets:         targets,
+		StartTime:       st.StartTime,
+		Duration:        time.Since(st.StartTime).Round(time.Second).String(),
+		GeneratedAt:     time.Now().Format("2006-01-02 15:04:05 UTC"),
+		TotalSubdomains: len(subs),
+		TotalLiveHosts:  len(hosts),
+		TotalPorts:      len(ports),
+		TotalURLs:       len(urlList),
+		TotalJSFiles:    len(jsList),
+		TotalFindings:   len(allFindings),
+		TotalSecrets:    len(allSecrets),
+		Subdomains:      subs,
+		Hosts:           hosts,
+		Ports:           ports,
+		Findings:        allFindings,
+		Secrets:         redactedSecrets,
+		URLs:            displayURLs,
                 JSFiles:         jsList,
                 WAFResults:      st.WAFResults,
         }

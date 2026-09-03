@@ -28,7 +28,8 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 
 /* ── Stats cards ── */
 .stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:24px}
-.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;text-align:center;cursor:pointer;transition:transform .15s,border-color .15s}
+.stat-card:hover{border-color:var(--accent);transform:translateY(-2px)}
 .stat-card .val{font-size:28px;font-weight:700;color:var(--accent)}
 .stat-card .lbl{font-size:12px;color:var(--text2);margin-top:4px}
 .stat-card.warn .val{color:var(--warn)}
@@ -105,19 +106,19 @@ tr:hover td{background:rgba(88,166,255,.04)}
 <aside class="sidebar">
   <div class="sidebar-logo">ReconX<span>{{.GeneratedAt}}</span></div>
   <div class="nav-section">Overview</div>
-  <a class="nav-item active" onclick="showPage('dashboard')">📊 Dashboard</a>
+  <a class="nav-item active" data-nav="dashboard" onclick="showPage('dashboard')">📊 Dashboard</a>
   <div class="nav-section">Assets</div>
-  <a class="nav-item" onclick="showPage('subdomains')">🌐 Subdomains <span class="nav-badge">{{.TotalSubdomains}}</span></a>
-  <a class="nav-item" onclick="showPage('live')">✅ Live Hosts <span class="nav-badge">{{.TotalLiveHosts}}</span></a>
-  {{if .HasScreenshots}}<a class="nav-item" onclick="showPage('screenshots')">📸 Screenshots <span class="nav-badge">{{len .HostScreenshots}}</span></a>{{end}}
-  <a class="nav-item" onclick="showPage('ports')">🔌 Ports <span class="nav-badge">{{.TotalPorts}}</span></a>
-  <a class="nav-item" onclick="showPage('urls')">🔗 URLs <span class="nav-badge">{{.TotalURLs}}</span></a>
+  <a class="nav-item" data-nav="subdomains" onclick="showPage('subdomains')">🌐 Subdomains <span class="nav-badge">{{.TotalSubdomains}}</span></a>
+  <a class="nav-item" data-nav="live" onclick="showPage('live')">✅ Live Hosts <span class="nav-badge">{{.TotalLiveHosts}}</span></a>
+  {{if .HasScreenshots}}<a class="nav-item" data-nav="screenshots" onclick="showPage('screenshots')">📸 Screenshots <span class="nav-badge">{{len .HostScreenshots}}</span></a>{{end}}
+  <a class="nav-item" data-nav="ports" onclick="showPage('ports')">🔌 Ports <span class="nav-badge">{{.TotalPorts}}</span></a>
+  <a class="nav-item" data-nav="urls" onclick="showPage('urls')">🔗 URLs <span class="nav-badge">{{.TotalURLs}}</span></a>
   <div class="nav-section">Discovery</div>
-  <a class="nav-item" onclick="showPage('params')">🎯 Parameters <span class="nav-badge">{{.TotalParams}}</span></a>
-  <a class="nav-item" onclick="showPage('js')">📜 JS Files <span class="nav-badge">{{.TotalJSFiles}}</span></a>
+  <a class="nav-item" data-nav="params" onclick="showPage('params')">🎯 Parameters <span class="nav-badge">{{.TotalParams}}</span></a>
+  <a class="nav-item" data-nav="js" onclick="showPage('js')">📜 JS Files <span class="nav-badge">{{.TotalJSFiles}}</span></a>
   <div class="nav-section">Findings</div>
-  <a class="nav-item" onclick="showPage('vulns')">🚨 Vulnerabilities <span class="nav-badge">{{.TotalFindings}}</span></a>
-  <a class="nav-item" onclick="showPage('secrets')">🔐 Secrets <span class="nav-badge">{{.TotalSecrets}}</span></a>
+  <a class="nav-item" data-nav="vulns" onclick="showPage('vulns')">🚨 Vulnerabilities <span class="nav-badge">{{.TotalFindings}}</span></a>
+  <a class="nav-item" data-nav="secrets" onclick="showPage('secrets')">🔐 Secrets <span class="nav-badge">{{.TotalSecrets}}</span></a>
 </aside>
 
 <!-- Main content -->
@@ -127,16 +128,16 @@ tr:hover td{background:rgba(88,166,255,.04)}
 <section id="dashboard" class="page active">
   <div class="section-title">Scan Dashboard</div>
   <div class="stats-grid">
-    <div class="stat-card"><div class="val">{{.TotalSubdomains}}</div><div class="lbl">Subdomains</div></div>
-    <div class="stat-card ok"><div class="val">{{.TotalLiveHosts}}</div><div class="lbl">Live Hosts</div></div>
-    <div class="stat-card warn"><div class="val">{{.TotalWAFHosts}}</div><div class="lbl">WAF Protected</div></div>
-    <div class="stat-card ok"><div class="val">{{.TotalNonWAFHosts}}</div><div class="lbl">No WAF</div></div>
-    <div class="stat-card"><div class="val">{{.TotalPorts}}</div><div class="lbl">Open Ports</div></div>
-    <div class="stat-card"><div class="val">{{.TotalURLs}}</div><div class="lbl">URLs</div></div>
-    <div class="stat-card"><div class="val">{{.TotalParams}}</div><div class="lbl">Parameters</div></div>
-    <div class="stat-card"><div class="val">{{.TotalJSFiles}}</div><div class="lbl">JS Files</div></div>
-    <div class="stat-card danger"><div class="val">{{.TotalFindings}}</div><div class="lbl">Findings</div></div>
-    <div class="stat-card danger"><div class="val">{{.TotalSecrets}}</div><div class="lbl">Secrets</div></div>
+    <div class="stat-card" onclick="showPage('subdomains')"><div class="val">{{.TotalSubdomains}}</div><div class="lbl">Subdomains</div></div>
+    <div class="stat-card ok" onclick="showPage('live')"><div class="val">{{.TotalLiveHosts}}</div><div class="lbl">Live Hosts</div></div>
+    <div class="stat-card warn" onclick="showPage('live')"><div class="val">{{.TotalWAFHosts}}</div><div class="lbl">WAF Protected</div></div>
+    <div class="stat-card ok" onclick="showPage('live')"><div class="val">{{.TotalNonWAFHosts}}</div><div class="lbl">No WAF</div></div>
+    <div class="stat-card" onclick="showPage('ports')"><div class="val">{{.TotalPorts}}</div><div class="lbl">Open Ports</div></div>
+    <div class="stat-card" onclick="showPage('urls')"><div class="val">{{.TotalURLs}}</div><div class="lbl">URLs</div></div>
+    <div class="stat-card" onclick="showPage('params')"><div class="val">{{.TotalParams}}</div><div class="lbl">Parameters</div></div>
+    <div class="stat-card" onclick="showPage('js')"><div class="val">{{.TotalJSFiles}}</div><div class="lbl">JS Files</div></div>
+    <div class="stat-card danger" onclick="showPage('vulns')"><div class="val">{{.TotalFindings}}</div><div class="lbl">Findings</div></div>
+    <div class="stat-card danger" onclick="showPage('secrets')"><div class="val">{{.TotalSecrets}}</div><div class="lbl">Secrets</div></div>
   </div>
   <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
     <div style="color:var(--text2);font-size:12px;margin-bottom:8px">SCAN INFO</div>
@@ -401,6 +402,7 @@ tr:hover td{background:rgba(88,166,255,.04)}
       {{end}}
       </tbody>
     </table>
+    {{if not .Secrets}}<div class="empty">No secrets found in analyzed JavaScript files.</div>{{end}}
   </div>
 </section>
 
@@ -418,8 +420,11 @@ const SCAN_DATA = {
 function showPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  event.target.classList.add('active');
+  const page = document.getElementById(id);
+  if (page) page.classList.add('active');
+  const navItem = document.querySelector(`.nav-item[data-nav="${id}"]`);
+  if (navItem) navItem.classList.add('active');
+  window.scrollTo({top: 0, behavior: 'smooth'});
 }
 
 // ── Table filtering ─────────────────────────────────────────────────────────

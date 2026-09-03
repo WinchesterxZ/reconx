@@ -203,30 +203,115 @@ func (p *Pipeline) loadExistingResults() error {
                 loaded = append(loaded, fmt.Sprintf("%d JS files", len(jsList)))
         }
 
-        // Load ports (optional — written by portscan module when SavePortsToTxt is called)
-        if portList, err := readLines(filepath.Join(p.outDir, "ports.txt")); err == nil {
-                for _, line := range portList {
-                        parts := strings.SplitN(line, ":", 2)
-                        if len(parts) != 2 {
-                                continue
-                        }
-                        port, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-                        if err != nil || port == 0 {
-                                continue
-                        }
-                        p.store.AddPort(&store.Port{
-                                Host:     strings.TrimSpace(parts[0]),
-                                Port:     port,
-                                Protocol: "tcp",
-                                Service:  guessPortService(port),
-                        })
-                }
-                loaded = append(loaded, fmt.Sprintf("%d ports", len(portList)))
-        }
+		// Load ports (optional — written by portscan module when SavePortsToTxt is called)
+		if portList, err := readLines(filepath.Join(p.outDir, "ports.txt")); err == nil {
+			for _, line := range portList {
+				parts := strings.SplitN(line, ":", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				port, err := strconv.Atoi(strings.TrimSpace(parts[1]))
+				if err != nil || port == 0 {
+					continue
+				}
+				p.store.AddPort(&store.Port{
+					Host:     strings.TrimSpace(parts[0]),
+					Port:     port,
+					Protocol: "tcp",
+					Service:  guessPortService(port),
+				})
+			}
+			loaded = append(loaded, fmt.Sprintf("%d ports", len(portList)))
+		}
 
-        if len(loaded) > 0 {
-                p.log.Info("Resumed: loaded %s", strings.Join(loaded, ", "))
-        }
+		// Load secrets (written by JS module: "[Type] Value — source=... file=...")
+		if secLines, err := readLines(filepath.Join(p.outDir, "secrets.txt")); err == nil {
+			secCount := 0
+			for _, line := range secLines {
+				line = strings.TrimSpace(line)
+				if line == "" || !strings.HasPrefix(line, "[") {
+					continue
+				}
+				endBracket := strings.Index(line, "]")
+				if endBracket == -1 {
+					continue
+				}
+				secType := line[1:endBracket]
+				rest := strings.TrimSpace(line[endBracket+1:])
+
+				var val, src, file string
+				parts := strings.Split(rest, " — ")
+				if len(parts) >= 1 {
+					val = parts[0]
+				}
+				if len(parts) >= 2 {
+					metaParts := strings.Split(parts[1], " ")
+					for _, mp := range metaParts {
+						if strings.HasPrefix(mp, "source=") {
+							src = strings.TrimPrefix(mp, "source=")
+						} else if strings.HasPrefix(mp, "file=") {
+							file = strings.TrimPrefix(mp, "file=")
+						}
+					}
+				}
+				p.store.AddSecret(&store.Secret{
+					Type:   secType,
+					Value:  val,
+					Source: src,
+					File:   file,
+				})
+				secCount++
+			}
+			if secCount > 0 {
+				loaded = append(loaded, fmt.Sprintf("%d secrets", secCount))
+			}
+		}
+
+		// Load findings (written by vuln module: "[SEV] Name — Target (Template)")
+		if findLines, err := readLines(filepath.Join(p.outDir, "findings.txt")); err == nil {
+			findCount := 0
+			for _, line := range findLines {
+				line = strings.TrimSpace(line)
+				if line == "" || !strings.HasPrefix(line, "[") {
+					continue
+				}
+				endBracket := strings.Index(line, "]")
+				if endBracket == -1 {
+					continue
+				}
+				sev := strings.ToLower(line[1:endBracket])
+				rest := strings.TrimSpace(line[endBracket+1:])
+
+				parts := strings.Split(rest, " — ")
+				name := rest
+				target := ""
+				tmpl := ""
+				if len(parts) == 2 {
+					name = parts[0]
+					rem := parts[1]
+					if startParen := strings.LastIndex(rem, " ("); startParen != -1 && strings.HasSuffix(rem, ")") {
+						target = rem[:startParen]
+						tmpl = rem[startParen+2 : len(rem)-1]
+					} else {
+						target = rem
+					}
+				}
+				p.store.AddFinding(&store.Finding{
+					Name:     name,
+					Severity: sev,
+					Target:   target,
+					Template: tmpl,
+				})
+				findCount++
+			}
+			if findCount > 0 {
+				loaded = append(loaded, fmt.Sprintf("%d findings", findCount))
+			}
+		}
+
+		if len(loaded) > 0 {
+			p.log.Info("Resumed: loaded %s", strings.Join(loaded, ", "))
+		}
         return nil
 }
 
