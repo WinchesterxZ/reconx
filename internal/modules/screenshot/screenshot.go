@@ -73,14 +73,16 @@ func (m *Module) Run(ctx context.Context) error {
 
 	args := []string{
 		"scan", "file",
-		"--file", aliveFile,
+		"-f", aliveFile,
 		"--screenshot-path", flatDir,
+		"--screenshot-format", "png",
 		"--timeout", "20",
 		"--threads", "5",
-		"--no-db",
+		"--no-http",
+		"--no-https",
 	}
 	if m.cfg.BugBountyHeader != "" {
-		args = append(args, "--header", m.cfg.BugBountyHeader)
+		args = append(args, "--chrome-header", m.cfg.BugBountyHeader)
 	}
 
 	m.log.Tool("gowitness", fmt.Sprintf("%d live hosts", len(hosts)))
@@ -134,7 +136,8 @@ func (m *Module) organizeByDomain(srcDir, dstRoot string) int {
 
 	count := 0
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".png") {
+		name := strings.ToLower(e.Name())
+		if e.IsDir() || (!strings.HasSuffix(name, ".png") && !strings.HasSuffix(name, ".jpeg") && !strings.HasSuffix(name, ".jpg")) {
 			continue
 		}
 
@@ -169,16 +172,17 @@ func (m *Module) organizeByDomain(srcDir, dstRoot string) int {
 }
 
 // parseDomainFromFilename extracts the domain from gowitness filenames.
-// gowitness v3 uses format: http-example.com-443-<hash>.png
-//                       or: https-sub.example.com-443-<hash>.png
+// gowitness v3 format: https---sub.example.com-443.png (or .jpeg)
+//             or v2:   https-sub.example.com-443.png
 func parseDomainFromFilename(name string) string {
 	// Strip extension
-	base := strings.TrimSuffix(name, ".png")
-	base = strings.TrimSuffix(base, ".PNG")
+	base := name
+	for _, ext := range []string{".png", ".PNG", ".jpeg", ".JPEG", ".jpg", ".JPG"} {
+		base = strings.TrimSuffix(base, ext)
+	}
 
-	// Split on dash — gowitness: <proto>-<host-with-dashes>-<port>-<hash>
-	// Strategy: strip known prefixes and suffixes
-	for _, proto := range []string{"https-", "http-"} {
+	// Strip protocol prefixes: https---, http---, https-, http-
+	for _, proto := range []string{"https---", "http---", "https-", "http-"} {
 		if strings.HasPrefix(base, proto) {
 			base = base[len(proto):]
 			break
@@ -186,10 +190,9 @@ func parseDomainFromFilename(name string) string {
 	}
 
 	// Remove trailing -<port>-<hash> parts
-	// Port is numeric; hash is hex. Find last two numeric-ish segments
+	// In v3: sub.example.com-443
 	parts := strings.Split(base, "-")
 	if len(parts) >= 2 {
-		// Remove last part (hash/timestamp) and port
 		end := len(parts)
 		if end > 0 && isNumericOrHex(parts[end-1]) {
 			end--
@@ -197,7 +200,9 @@ func parseDomainFromFilename(name string) string {
 		if end > 0 && isNumeric(parts[end-1]) {
 			end--
 		}
-		base = strings.Join(parts[:end], "-")
+		if end > 0 {
+			base = strings.Join(parts[:end], "-")
+		}
 	}
 
 	// Sanitize

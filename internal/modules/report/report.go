@@ -35,6 +35,7 @@ type ReportData struct {
 	Hosts      []*store.Host
 	WAFHosts   []*store.Host  // hosts behind WAF
 	NoWAFHosts []*store.Host  // hosts not behind WAF
+	WAFMap     map[string]bool // domain -> is WAF protected (fast O(1) lookup in template)
 	Ports      []*store.Port
 	Findings   []*store.Finding
 	Secrets    []*store.Secret
@@ -147,9 +148,11 @@ func Generate(st *store.Store, targets []string, outDir string) error {
         }
 
 	// WAF-split hosts
+	data.WAFMap = make(map[string]bool)
 	for _, h := range hosts {
 		if st.IsWAFProtected(h.Domain) {
 			data.WAFHosts = append(data.WAFHosts, h)
+			data.WAFMap[h.Domain] = true
 		} else {
 			data.NoWAFHosts = append(data.NoWAFHosts, h)
 		}

@@ -243,7 +243,6 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir, label str
 		"-oJ", outFile,
 		"-t", threads,
 		"-c", chunk,
-		"--passive",
 	}
 	if m.cfg.BugBountyHeader != "" {
 		args = append(args, "--headers", m.cfg.BugBountyHeader)
@@ -408,7 +407,7 @@ func (m *Module) runParamSpider(ctx context.Context, paramsDir string) []string 
 	var allParams []string
 	for _, domain := range domains {
 		outFile := filepath.Join(store.DataDir(m.outDir), fmt.Sprintf("paramspider_%s.txt", domain))
-		args := []string{"-d", domain, "-o", outFile, "--quiet"}
+		args := []string{"-d", domain, "-s"}
 
 		m.log.Tool("paramspider", fmt.Sprintf("domain: %s", domain))
 		m.log.ToolCmd("paramspider", args, "")
@@ -417,17 +416,11 @@ func (m *Module) runParamSpider(ctx context.Context, paramsDir string) []string 
 		board := m.log.NewProgressBoard()
 		board.Register("paramspider", domain)
 
-		r := runner.Run(ctx, "paramspider", args,
-runner.WithTimeout(10*time.Minute),
-runner.WithLineCallback(func(line string) { board.Heartbeat("paramspider") }),
-runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "paramspider: %s", line) }),
-)
-
-		// Parse output file
-		data, err := os.ReadFile(outFile)
 		count := 0
-		if err == nil {
-			for _, line := range strings.Split(string(data), "\n") {
+		r := runner.Run(ctx, "paramspider", args,
+			runner.WithTimeout(10*time.Minute),
+			runner.WithLineCallback(func(line string) {
+				board.Heartbeat("paramspider")
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "http") {
 					params := extractParamsFromURL(line)
@@ -442,11 +435,16 @@ runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "paramspid
 						count++
 					}
 				}
-			}
-		}
+			}),
+			runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "paramspider: %s", line) }),
+		)
 
 		board.Done("paramspider", count)
 		board.Stop()
+
+		if len(r.Lines) > 0 {
+			_ = store.SaveRaw(outFile, r.Lines)
+		}
 
 		if r.IsTimeout() {
 			m.log.ToolTimeout("paramspider", count, 10*time.Minute)
@@ -638,9 +636,9 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
 	tmpFile.Close()
 
 	outFile := filepath.Join(store.DataDir(m.outDir), "getjs_endpoints.txt")
-	args := []string{"-input", tmpFile.Name(), "-output", outFile, "-complete", "-resolve"}
+	args := []string{"--input", tmpFile.Name(), "--output", outFile, "--complete", "--resolve"}
 	if m.cfg.BugBountyHeader != "" {
-		args = append(args, "-header", m.cfg.BugBountyHeader)
+		args = append(args, "-H", m.cfg.BugBountyHeader)
 	}
 
 	m.log.Tool("getJS", fmt.Sprintf("%d JS files — extracting endpoint URLs", len(jsFiles)))

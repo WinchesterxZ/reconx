@@ -222,7 +222,7 @@ tr:hover td{background:rgba(88,166,255,.04)}
         <td class="truncate" title="{{.Title}}">{{.Title}}</td>
         <td>{{.Server}}</td>
         <td>{{range .TechStack}}<span class="tag">{{.}}</span>{{end}}</td>
-        <td>{{if $.WAFHosts}}{{range $.WAFHosts}}{{if eq .Domain $.Domain}}<span class="badge badge-waf">🛡 WAF</span>{{end}}{{end}}{{end}}</td>
+        <td>{{if index $.WAFMap .Domain}}<span class="badge badge-waf">🛡 WAF</span>{{else}}<span class="badge badge-ok">✅ Clean</span>{{end}}</td>
         {{if $.HasScreenshots}}<td>{{$ss := index $.HostScreenshots .Domain}}{{if $ss}}<a href="{{$ss}}" target="_blank"><img src="{{$ss}}" style="height:48px;border-radius:4px;border:1px solid var(--border)" loading="lazy"></a>{{else}}—{{end}}</td>{{end}}
       </tr>
       {{end}}
@@ -245,7 +245,7 @@ tr:hover td{background:rgba(88,166,255,.04)}
   </div>
   <div class="ss-grid" id="ss-grid">
   {{range .Hosts}}{{$domain := .Domain}}{{$ss := index $.HostScreenshots $domain}}{{if $ss}}
-  <div class="ss-card" data-domain="{{$domain}}" data-waf="{{if $.WAFHosts}}{{range $.WAFHosts}}{{if eq .Domain $domain}}waf{{end}}{{end}}{{end}}">
+  <div class="ss-card" data-domain="{{$domain}}" data-waf="{{if index $.WAFMap $domain}}waf{{else}}nowaf{{end}}">
     <a href="{{$ss}}" target="_blank"><img src="{{$ss}}" loading="lazy" alt="{{$domain}}"></a>
     <div class="ss-info">
       <div class="ss-domain"><a href="{{index .Meta "url"}}" target="_blank">{{$domain}}</a></div>
