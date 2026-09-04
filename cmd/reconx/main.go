@@ -287,6 +287,8 @@ func main() {
         // Each tool runs until it finishes naturally.
         // Ctrl+C still works — it cancels the parent context which stops everything.
         if *noTimeout {
+                cfg.NoTimeout = true
+                runner.SetNoTimeout(true)
                 for name, tool := range cfg.Tools {
                         tool.Timeout = 0
                         cfg.Tools[name] = tool

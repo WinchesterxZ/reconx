@@ -22,7 +22,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .nav-badge{float:right;background:var(--surface2);border-radius:10px;padding:1px 7px;font-size:11px;color:var(--text2)}
 
 /* ── Main ── */
-.main{flex:1;overflow:hidden;padding:24px}
+.main{flex:1;overflow-y:auto;min-width:0;padding:24px}
 .page{display:none}
 .page.active{display:block}
 
@@ -312,23 +312,64 @@ tr:hover td{background:rgba(88,166,255,.04)}
   <div class="waf-strip">
     <span class="waf-badge protected">🛡 WAF params: {{len .WAFParams}}</span>
     <span class="waf-badge clean">✅ Non-WAF params: {{len .NoWAFParams}}</span>
+    {{if .ParamFindings}}<span class="waf-badge" style="background:#1e293b;border:1px solid var(--border);color:var(--text)">📍 Endpoints with params: {{len .ParamFindings}}</span>{{end}}
   </div>
+
+  <div class="filter-bar">
+    <input type="text" id="param-search" placeholder="Search parameter, endpoint URL, or source..." oninput="filterTable('params-table','param-search')">
+    <select id="param-waf-filter" onchange="filterTableSelect('params-table','param-waf-filter',2)">
+      <option value="">All WAF Status</option>
+      <option value="WAF">Shielded (WAF)</option>
+      <option value="Clean">Clean (No WAF)</option>
+    </select>
+  </div>
+
   {{if .WAFParams}}
-  <div style="margin-bottom:20px">
+  <div style="margin-bottom:16px">
     <div style="font-size:13px;font-weight:600;color:var(--danger);margin-bottom:8px">🛡 WAF-Protected Parameters ({{len .WAFParams}})</div>
     <div class="param-list">
-    {{range .WAFParams}}<span class="param-pill {{if or (eq . "id") (eq . "token") (eq . "key") (eq . "secret") (eq . "api") (eq . "password") (eq . "pwd") (eq . "auth") (eq . "session")}}high-value{{end}}">{{.}}</span>{{end}}
+    {{range .WAFParams}}<span class="param-pill {{if or (eq . "id") (eq . "token") (eq . "key") (eq . "secret") (eq . "api") (eq . "password") (eq . "pwd") (eq . "auth") (eq . "session")}}high-value{{end}}" onclick="setParamFilter(this.textContent)" style="cursor:pointer" title="Click to filter endpoints">{{.}}</span>{{end}}
     </div>
   </div>
   {{end}}
+
   {{if .NoWAFParams}}
-  <div>
+  <div style="margin-bottom:24px">
     <div style="font-size:13px;font-weight:600;color:var(--accent2);margin-bottom:8px">✅ Non-WAF Parameters ({{len .NoWAFParams}})</div>
     <div class="param-list">
-    {{range .NoWAFParams}}<span class="param-pill {{if or (eq . "id") (eq . "token") (eq . "key") (eq . "secret") (eq . "api") (eq . "password") (eq . "pwd") (eq . "auth") (eq . "session")}}high-value{{end}}">{{.}}</span>{{end}}
+    {{range .NoWAFParams}}<span class="param-pill {{if or (eq . "id") (eq . "token") (eq . "key") (eq . "secret") (eq . "api") (eq . "password") (eq . "pwd") (eq . "auth") (eq . "session")}}high-value{{end}}" onclick="setParamFilter(this.textContent)" style="cursor:pointer" title="Click to filter endpoints">{{.}}</span>{{end}}
     </div>
   </div>
   {{end}}
+
+  {{if .ParamFindings}}
+  <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:10px">Parameter Endpoints (Showing {{len .ParamFindings}} endpoints — full list saved in urls/urls_params.txt)</div>
+  <div class="table-wrap" style="max-height:600px;overflow-y:auto;margin-bottom:20px">
+    <table id="params-table">
+      <thead>
+        <tr>
+          <th onclick="sortTable('params-table',0)" style="width:180px">Parameter ↕</th>
+          <th onclick="sortTable('params-table',1)">Target Endpoint URL ↕</th>
+          <th onclick="sortTable('params-table',2)" style="width:110px">WAF ↕</th>
+          <th onclick="sortTable('params-table',3)" style="width:100px">Method ↕</th>
+          <th onclick="sortTable('params-table',4)" style="width:120px">Source ↕</th>
+        </tr>
+      </thead>
+      <tbody>
+      {{range .ParamFindings}}
+        <tr>
+          <td><code style="color:var(--accent);font-weight:600">{{.Param}}</code></td>
+          <td><a href="{{.TestURL}}" target="_blank" rel="noopener noreferrer" class="truncate" style="max-width:650px;display:inline-block" title="{{.TestURL}}">{{.TestURL}}</a></td>
+          <td>{{if .IsWAF}}<span class="badge badge-waf">🛡 WAF</span>{{else}}<span class="badge badge-ok">✅ Clean</span>{{end}}</td>
+          <td><span class="badge" style="background:var(--surface2);border:1px solid var(--border)">{{.Method}}</span></td>
+          <td><span style="font-size:11px;color:var(--text2)">{{.Tool}}</span></td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+
   {{if not .Params}}<div class="empty">No parameters discovered. Run with --params flag.</div>{{end}}
 </section>
 
@@ -396,7 +437,13 @@ tr:hover td{background:rgba(88,166,255,.04)}
       <tr>
         <td><strong>{{.Type}}</strong></td>
         <td><span class="tag">{{.Source}}</span></td>
-        <td class="truncate" title="{{.File}}">{{.File}}</td>
+        <td class="truncate" title="{{.File}}">
+          {{if isURL .File}}
+            <a href="{{.File}}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);text-decoration:underline">{{.File}}</a>
+          {{else}}
+            {{.File}}
+          {{end}}
+        </td>
         <td><code>{{.Value}}</code></td>
       </tr>
       {{end}}
@@ -442,6 +489,14 @@ function filterTableSelect(tableId, selectId, colIdx) {
     if (!cell) return;
     row.style.display = (!q || cell.textContent.toLowerCase().includes(q)) ? '' : 'none';
   });
+}
+
+function setParamFilter(paramName) {
+  const searchInput = document.getElementById('param-search');
+  if (searchInput) {
+    searchInput.value = paramName.trim();
+    filterTable('params-table', 'param-search');
+  }
 }
 
 // ── Screenshot filtering ────────────────────────────────────────────────────

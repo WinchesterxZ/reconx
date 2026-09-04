@@ -70,6 +70,7 @@ type Config struct {
         Workers         int
         Tokens          map[string]string
         BugBountyHeader string
+        NoTimeout       bool   // disable all tool timeouts (run without deadlines)
         ResumeDir       string // path to existing scan dir to resume from
         WordlistPath    string // DNS brute-force wordlist override (--wordlist)
         ResolversPath   string // DNS resolvers file override (--resolvers)
@@ -188,7 +189,7 @@ func DefaultConfig() *Config {
 
                         // ── JS / Secrets ─────────────────────────────────────────────────
                         "trufflehog": {Enabled: true, Path: "trufflehog", Timeout: 1800},
-                        "mantra":     {Enabled: true, Path: "mantra",     Timeout: 1800},
+                        "mantra":     {Enabled: true, Path: "mantra",     Timeout: 600},
                         "jsecret":    {Enabled: true, Path: "jsecret",    Timeout: 1800},
                         "subjs":      {Enabled: true, Path: "subjs",      Timeout: 1800},
 

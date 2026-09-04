@@ -6,9 +6,9 @@ import (
 "strings"
 )
 
-// extractParamsFromURL parses a URL and returns all query parameter keys found.
+// ExtractParamsFromURL parses a URL and returns all query parameter keys found.
 // e.g. "https://example.com/search?q=test&page=1" → ["page", "q"]
-func extractParamsFromURL(rawURL string) []string {
+func ExtractParamsFromURL(rawURL string) []string {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.RawQuery == "" {
 		return nil
@@ -32,7 +32,7 @@ func extractParamsFromURL(rawURL string) []string {
 func ExtractParamsFromURLs(urls []string) []string {
 	seen := make(map[string]bool)
 	for _, u := range urls {
-		for _, k := range extractParamsFromURL(u) {
+		for _, k := range ExtractParamsFromURL(u) {
 			seen[k] = true
 		}
 	}

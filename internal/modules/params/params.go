@@ -61,6 +61,17 @@ func (m *Module) Run(ctx context.Context) error {
 	urlsWithParams := FilterURLsWithParams(allURLs)
 	goParams := ExtractParamsFromURLs(urlsWithParams)
 	m.log.Info("URL parser: %d URLs with params → %d unique param keys extracted", len(urlsWithParams), len(goParams))
+	for _, u := range urlsWithParams {
+		pKeys := ExtractParamsFromURL(u)
+		if len(pKeys) > 0 {
+			m.store.AddParamFinding(&store.ParamFinding{
+				URL:    u,
+				Method: "GET",
+				Params: pKeys,
+				Tool:   "url_parser",
+			})
+		}
+	}
 	if err := store.SaveRaw(filepath.Join(dataDir, "url_parser_params.txt"), goParams); err != nil {
 		m.log.Warn("Could not save url_parser_params.txt: %v", err)
 	}
@@ -70,10 +81,10 @@ func (m *Module) Run(ctx context.Context) error {
 	wafURLs, nowafURLs := m.store.SplitURLsByWAF(allURLs)
 	m.log.Info("Target split — WAF: %d URLs / non-WAF: %d URLs", len(wafURLs), len(nowafURLs))
 
-	arjunPriority := m.buildPriorityList(allURLs, 60)
-	arjunWAF := m.buildPriorityList(wafURLs, 30)
-	arjunNoWAF := m.buildPriorityList(nowafURLs, 60)
-	dalfoxURLs := m.buildPriorityList(allURLs, 500)
+	arjunPriority := m.buildPriorityList(allURLs, 30)
+	arjunWAF := m.buildPriorityList(wafURLs, 8)
+	arjunNoWAF := m.buildPriorityList(nowafURLs, 15)
+	dalfoxURLs := m.buildPriorityList(allURLs, 150)
 
 	// Save target lists
 	if err := store.SaveRaw(filepath.Join(paramsDir, "targets.txt"), dalfoxURLs); err != nil {
@@ -231,11 +242,11 @@ len(dalfoxURLs), len(arjunWAF), len(arjunNoWAF))
 func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir, label string, isWAF bool) []string {
 	outFile := filepath.Join(paramsDir, label+"_results.json")
 
-	threads := "10"
+	threads := "15"
 	chunk := "250"
 	if isWAF {
-		threads = "2"  // slow down for WAF hosts
-		chunk = "50"
+		threads = "5"   // balanced concurrency for WAF hosts
+		chunk = "200"   // 4x fewer HTTP requests than chunk 50
 	}
 
 	args := []string{
@@ -254,6 +265,9 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir, label str
 		wafLabel = " (WAF mode: slow/stable)"
 		timeout = 90 * time.Minute
 	}
+	if m.cfg.NoTimeout || runner.IsNoTimeout() {
+		timeout = 0
+	}
 
 	lines := countLines(targetsFile)
 	m.log.Tool("arjun", fmt.Sprintf("%s → %d endpoints%s", label, lines, wafLabel))
@@ -264,14 +278,14 @@ func (m *Module) runArjun(ctx context.Context, targetsFile, paramsDir, label str
 	board.Register("arjun:"+label, fmt.Sprintf("%d endpoints", lines))
 
 	r := runner.Run(ctx, "arjun", args,
-runner.WithTimeout(timeout),
-runner.WithLineCallback(func(line string) {
-board.Heartbeat("arjun:" + label)
-line = strings.TrimSpace(line)
-if strings.Contains(line, "Valid parameter found") || strings.Contains(line, "[+]") {
-m.log.InfoBoard(board, "  [arjun/%s] %s", label, line)
-}
-}),
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) {
+			board.Heartbeat("arjun:" + label)
+			line = strings.TrimSpace(line)
+			if strings.Contains(line, "Valid parameter found") || strings.Contains(line, "[+]") {
+				m.log.InfoBoard(board, "  [arjun/%s] %s", label, line)
+			}
+		}),
 runner.WithStderrCallback(func(line string) {
 m.log.DebugBoard(board, "arjun/%s: %s", label, line)
 board.Heartbeat("arjun:" + label)
@@ -339,18 +353,35 @@ func (m *Module) runX8(ctx context.Context, targets []string, paramsDir string) 
 		return nil
 	}
 	outFile := filepath.Join(store.DataDir(m.outDir), "x8_results.txt")
-	input := strings.Join(targets[:min(len(targets), 100)], "\n") // cap at 100 for x8
+	targetsSample := targets[:min(len(targets), 100)] // cap at 100 for x8
+
+	targetsTmp, err := os.CreateTemp("", "x8-targets-*.txt")
+	if err != nil {
+		m.log.Warn("x8: could not create temp targets file: %v", err)
+		return nil
+	}
+	defer os.Remove(targetsTmp.Name())
+	if _, err := targetsTmp.WriteString(strings.Join(targetsSample, "\n")); err != nil {
+		_ = targetsTmp.Close()
+		return nil
+	}
+	_ = targetsTmp.Close()
 
 	args := []string{
-		"-u", "-",   // read URLs from stdin
-		"--output-file", outFile,
-		"--output-format", "url",
+		"-u", targetsTmp.Name(),
+		"-o", outFile,
+		"-O", "url",
 	}
 	if m.cfg.BugBountyHeader != "" {
 		args = append(args, "-H", m.cfg.BugBountyHeader)
 	}
 
-	m.log.Tool("x8", fmt.Sprintf("%d URLs (param brute-force)", min(len(targets), 100)))
+	timeout := 30 * time.Minute
+	if m.cfg.NoTimeout || runner.IsNoTimeout() {
+		timeout = 0
+	}
+
+	m.log.Tool("x8", fmt.Sprintf("%d URLs (param brute-force)", len(targetsSample)))
 	m.log.ToolCmd("x8", args, "")
 	start := time.Now()
 
@@ -358,11 +389,10 @@ func (m *Module) runX8(ctx context.Context, targets []string, paramsDir string) 
 	board.Register("x8", "discovering params")
 
 	r := runner.Run(ctx, "x8", args,
-runner.WithStdin(input),
-runner.WithTimeout(30*time.Minute),
-runner.WithLineCallback(func(line string) { board.Heartbeat("x8") }),
-runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "x8: %s", line) }),
-)
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) { board.Heartbeat("x8") }),
+		runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "x8: %s", line) }),
+	)
 
 	var found []string
 	for _, line := range r.Lines {
@@ -371,7 +401,7 @@ runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "x8: %s", 
 			continue
 		}
 		// x8 outputs full URLs with discovered params
-		params := extractParamsFromURL(line)
+		params := ExtractParamsFromURL(line)
 		if len(params) > 0 {
 			m.store.AddParamFinding(&store.ParamFinding{
 				URL:    line,
@@ -416,14 +446,18 @@ func (m *Module) runParamSpider(ctx context.Context, paramsDir string) []string 
 		board := m.log.NewProgressBoard()
 		board.Register("paramspider", domain)
 
+		timeout := 10 * time.Minute
+		if m.cfg.NoTimeout || runner.IsNoTimeout() {
+			timeout = 0
+		}
 		count := 0
 		r := runner.Run(ctx, "paramspider", args,
-			runner.WithTimeout(10*time.Minute),
+			runner.WithTimeout(timeout),
 			runner.WithLineCallback(func(line string) {
 				board.Heartbeat("paramspider")
 				line = strings.TrimSpace(line)
 				if strings.HasPrefix(line, "http") {
-					params := extractParamsFromURL(line)
+					params := ExtractParamsFromURL(line)
 					if len(params) > 0 {
 						allParams = append(allParams, params...)
 						m.store.AddParamFinding(&store.ParamFinding{
@@ -480,15 +514,20 @@ func (m *Module) runUnfurl(ctx context.Context, urls []string, paramsDir string)
 	m.log.ToolCmd("unfurl", args, fmt.Sprintf("[%d URLs via stdin]", len(urlsWithQ)))
 	start := time.Now()
 
+	timeout := 5 * time.Minute
+	if m.cfg.NoTimeout || runner.IsNoTimeout() {
+		timeout = 0
+	}
+
 	board := m.log.NewProgressBoard()
 	board.Register("unfurl", "extracting keys")
 
 	r := runner.Run(ctx, "unfurl", args,
-runner.WithStdin(input),
-runner.WithTimeout(5*time.Minute),
-runner.WithLineCallback(func(line string) { board.Heartbeat("unfurl") }),
-runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "unfurl: %s", line) }),
-)
+		runner.WithStdin(input),
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) { board.Heartbeat("unfurl") }),
+		runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "unfurl: %s", line) }),
+	)
 
 	// Deduplicate unfurl output
 	seen := make(map[string]bool)
@@ -532,6 +571,9 @@ func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string)
 
 	input := strings.Join(urls, "\n")
 	timeout := 15 * time.Minute
+	if m.cfg.NoTimeout || runner.IsNoTimeout() {
+		timeout = 0
+	}
 
 	m.log.Tool("dalfox", fmt.Sprintf("%d URLs — param analysis only", len(urls)))
 	m.log.ToolCmd("dalfox", args, fmt.Sprintf("[%d URLs via stdin]", len(urls)))
@@ -542,8 +584,8 @@ func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string)
 
 	count := 0
 	r := runner.Run(ctx, "dalfox", args,
-runner.WithStdin(input),
-runner.WithTimeout(timeout),
+		runner.WithStdin(input),
+		runner.WithTimeout(timeout),
 runner.WithStderrCallback(func(line string) { m.log.DebugBoard(board, "dalfox: %s", line) }),
 runner.WithLineCallback(func(line string) {
 board.Heartbeat("dalfox")
@@ -615,12 +657,27 @@ func (m *Module) parseDalfoxJSON(jsonFile string) []string {
 	return params
 }
 
-// runGetJS runs getJS to find JS files and extracts parameter-bearing URLs from them.
+// runGetJS runs getJS to find JS files from live hosts and extract endpoint URLs.
 func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
-	jsFiles := m.store.GetJSFiles()
-	if len(jsFiles) == 0 {
-		m.log.Debug("getJS: no JS files in store, skipping")
+	var targetURLs []string
+	for _, h := range m.store.GetHosts() {
+		if u, ok := h.Meta["url"]; ok && u != "" {
+			targetURLs = append(targetURLs, u)
+		} else {
+			targetURLs = append(targetURLs, "https://"+h.Domain)
+		}
+	}
+	if len(targetURLs) == 0 {
+		for _, d := range m.cfg.Target.Domains {
+			targetURLs = append(targetURLs, "https://"+d)
+		}
+	}
+	if len(targetURLs) == 0 {
+		m.log.Debug("getJS: no target URLs to extract JS from, skipping")
 		return
+	}
+	if len(targetURLs) > 100 {
+		targetURLs = targetURLs[:100]
 	}
 
 	tmpFile, err := os.CreateTemp("", "getjs-input-*.txt")
@@ -629,38 +686,46 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
 		return
 	}
 	defer os.Remove(tmpFile.Name())
-	if _, err := tmpFile.WriteString(strings.Join(jsFiles, "\n")); err != nil {
+	if _, err := tmpFile.WriteString(strings.Join(targetURLs, "\n")); err != nil {
 		tmpFile.Close()
 		return
 	}
 	tmpFile.Close()
 
 	outFile := filepath.Join(store.DataDir(m.outDir), "getjs_endpoints.txt")
-	args := []string{"--input", tmpFile.Name(), "--output", outFile, "--complete", "--resolve"}
+	args := []string{"--input", tmpFile.Name(), "--output", outFile, "--complete", "--insecure"}
 	if m.cfg.BugBountyHeader != "" {
 		args = append(args, "-H", m.cfg.BugBountyHeader)
 	}
 
-	m.log.Tool("getJS", fmt.Sprintf("%d JS files — extracting endpoint URLs", len(jsFiles)))
+	timeout := 10 * time.Minute
+	if m.cfg.NoTimeout || runner.IsNoTimeout() {
+		timeout = 0
+	}
+
+	m.log.Tool("getJS", fmt.Sprintf("%d live hosts — extracting JS endpoints", len(targetURLs)))
 	m.log.ToolCmd("getJS", args, "")
 	start := time.Now()
 
 	board := m.log.NewProgressBoard()
-	board.Register("getJS", "extracting URLs")
+	board.Register("getJS", "extracting JS")
 
 	r := runner.Run(ctx, "getJS", args,
-runner.WithTimeout(10*time.Minute),
-runner.WithStderrCallback(func(line string) {
-m.log.DebugBoard(board, "getJS: %s", line)
-board.Heartbeat("getJS")
-}),
-)
+		runner.WithTimeout(timeout),
+		runner.WithStderrCallback(func(line string) {
+			m.log.DebugBoard(board, "getJS: %s", line)
+			board.Heartbeat("getJS")
+		}),
+	)
 
 	count := 0
 	for _, line := range r.Lines {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "http") {
 			m.store.AddURL(line)
+			if strings.Contains(line, ".js") {
+				m.store.AddJSFile(line)
+			}
 			count++
 		}
 	}

@@ -142,8 +142,13 @@ func (m *Module) Run(ctx context.Context) error {
 			catFindings := 0
 			parseErrors := 0
 
+			catTimeout := time.Duration(cat.timeout) * time.Second
+			if m.cfg.NoTimeout || runner.IsNoTimeout() {
+				catTimeout = 0
+			}
+
 			r := runner.Run(ctx, nucleiPath, args,
-				runner.WithTimeout(time.Duration(cat.timeout)*time.Second),
+				runner.WithTimeout(catTimeout),
 				runner.WithStderrCallback(func(line string) {
 					m.log.Debug("nuclei[%s/%s]: %s", g.label, cat.name, util.Truncate(line, 120))
 				}),
@@ -164,7 +169,7 @@ func (m *Module) Run(ctx context.Context) error {
 				}))
 
 			if r.IsTimeout() {
-				m.log.ToolTimeout(toolTag, catFindings, time.Duration(cat.timeout)*time.Second)
+				m.log.ToolTimeout(toolTag, catFindings, catTimeout)
 			} else if r.Err != nil && catFindings == 0 {
 				if len(r.Stderr) > 0 {
 					m.log.ToolError(toolTag, fmt.Errorf(r.DiagString()), r.Stderr)

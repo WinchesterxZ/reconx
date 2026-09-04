@@ -193,6 +193,29 @@ func (p *Pipeline) loadExistingResults() error {
         if urlList, err := readLines(filepath.Join(p.outDir, "urls.txt")); err == nil {
                 p.store.AddURLs(urlList)
                 loaded = append(loaded, fmt.Sprintf("%d URLs", len(urlList)))
+
+                // Also populate parameter findings from discovered URLs (sample up to 1,000)
+                urlsWithParams := params.FilterURLsWithParams(urlList)
+                paramFindingsCount := 0
+                sampleParams := urlsWithParams
+                if len(sampleParams) > 1000 {
+                        sampleParams = sampleParams[:1000]
+                }
+                for _, u := range sampleParams {
+                        pKeys := params.ExtractParamsFromURL(u)
+                        if len(pKeys) > 0 {
+                                p.store.AddParamFinding(&store.ParamFinding{
+                                        URL:    u,
+                                        Method: "GET",
+                                        Params: pKeys,
+                                        Tool:   "url_parser",
+                                })
+                                paramFindingsCount++
+                        }
+                }
+                if paramFindingsCount > 0 {
+                        loaded = append(loaded, fmt.Sprintf("%d parameter endpoints", paramFindingsCount))
+                }
         }
 
         // Load JS files

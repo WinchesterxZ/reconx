@@ -3,6 +3,7 @@ package report
 import (
         "fmt"
         "html/template"
+        "net/url"
         "os"
         "path/filepath"
         "sort"
@@ -44,6 +45,7 @@ type ReportData struct {
 	Params     []string // discovered parameter keys (all, deduplicated)
 	WAFParams  []string // params from WAF-protected hosts
 	NoWAFParams []string // params from non-WAF hosts
+	ParamFindings []*ParamFindingItem // Detailed parameter-to-endpoint mappings
 	WAFResults  []*store.WAFResult // WAF detection results
 
 	CriticalCount int
@@ -74,6 +76,28 @@ type ReportData struct {
 type chartSlice struct {
         Label string
         Value int
+}
+
+// ParamFindingItem represents an endpoint-parameter pair with security context
+type ParamFindingItem struct {
+	Param   string
+	URL     string
+	TestURL string // Full endpoint URL with the parameter attached for testing
+	Method  string
+	IsWAF   bool
+	Tool    string
+}
+
+// buildTestURL ensures the parameter is visibly present in the URL for direct testing and linking.
+func buildTestURL(targetURL, param string) string {
+	if strings.Contains(targetURL, param+"=") {
+		return targetURL
+	}
+	sep := "?"
+	if strings.Contains(targetURL, "?") {
+		sep = "&"
+	}
+	return targetURL + sep + param + "=FUZZ"
 }
 
 // Generate creates the HTML report file
@@ -256,6 +280,116 @@ func Generate(st *store.Store, targets []string, outDir string) error {
 	}
 	data.TotalParams = len(data.Params)
 
+	// Build detailed parameter endpoints table
+	seenParamFinding := make(map[string]bool)
+	paramURLCount := make(map[string]int)
+	const maxEndpointsPerParam = 5
+	const maxTotalParamFindings = 2000
+
+	// 1. First include active tool discoveries (arjun, x8, dalfox, paramspider)
+	for _, pr := range st.GetParamResults() {
+		if pr.Tool == "url_parser" || pr.Tool == "" {
+			continue // handled in step 2 with sampling
+		}
+		for _, p := range pr.Params {
+			key := fmt.Sprintf("%s|%s|%s", p, pr.URL, pr.Method)
+			if !seenParamFinding[key] {
+				seenParamFinding[key] = true
+				data.ParamFindings = append(data.ParamFindings, &ParamFindingItem{
+					Param:   p,
+					URL:     pr.URL,
+					TestURL: buildTestURL(pr.URL, p),
+					Method:  pr.Method,
+					IsWAF:   st.IsWAFProtected(pr.URL),
+					Tool:    pr.Tool,
+				})
+			}
+		}
+	}
+
+	// 2. Then sample from url_parser endpoints up to maxTotalParamFindings
+	for _, pr := range st.GetParamResults() {
+		if len(data.ParamFindings) >= maxTotalParamFindings {
+			break
+		}
+		if pr.Tool != "url_parser" && pr.Tool != "" {
+			continue // already handled above
+		}
+		for _, p := range pr.Params {
+			if paramURLCount[p] >= maxEndpointsPerParam {
+				continue
+			}
+			key := fmt.Sprintf("%s|%s|%s", p, pr.URL, pr.Method)
+			if !seenParamFinding[key] {
+				seenParamFinding[key] = true
+				paramURLCount[p]++
+				tool := pr.Tool
+				if tool == "" {
+					tool = "url_query"
+				}
+				data.ParamFindings = append(data.ParamFindings, &ParamFindingItem{
+					Param:   p,
+					URL:     pr.URL,
+					TestURL: buildTestURL(pr.URL, p),
+					Method:  pr.Method,
+					IsWAF:   st.IsWAFProtected(pr.URL),
+					Tool:    tool,
+				})
+				if len(data.ParamFindings) >= maxTotalParamFindings {
+					break
+				}
+			}
+		}
+	}
+
+	// 3. Sample representative parameter-bearing endpoints directly from all discovered URLs
+	for _, rawURL := range urlList {
+		if len(data.ParamFindings) >= maxTotalParamFindings {
+			break
+		}
+		if strings.Contains(rawURL, "?") && strings.Contains(rawURL, "=") {
+			u, err := url.Parse(rawURL)
+			if err != nil || u.RawQuery == "" {
+				continue
+			}
+			vals, err := url.ParseQuery(u.RawQuery)
+			if err != nil {
+				continue
+			}
+			isWaf := st.IsWAFProtected(rawURL)
+			for k := range vals {
+				k = strings.TrimSpace(k)
+				if k == "" || paramURLCount[k] >= maxEndpointsPerParam {
+					continue
+				}
+				key := fmt.Sprintf("%s|%s|GET", k, rawURL)
+				if !seenParamFinding[key] {
+					seenParamFinding[key] = true
+					paramURLCount[k]++
+					data.ParamFindings = append(data.ParamFindings, &ParamFindingItem{
+						Param:   k,
+						URL:     rawURL,
+						TestURL: buildTestURL(rawURL, k),
+						Method:  "GET",
+						IsWAF:   isWaf,
+						Tool:    "url_query",
+					})
+					if len(data.ParamFindings) >= maxTotalParamFindings {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// Sort ParamFindings alphabetically by param then URL
+	sort.Slice(data.ParamFindings, func(i, j int) bool {
+		if data.ParamFindings[i].Param != data.ParamFindings[j].Param {
+			return data.ParamFindings[i].Param < data.ParamFindings[j].Param
+		}
+		return data.ParamFindings[i].URL < data.ParamFindings[j].URL
+	})
+
 	// Screenshot discovery: look for screenshots/<domain>/screenshot.png
 	ssDir := filepath.Join(outDir, "screenshots")
 	data.HostScreenshots = make(map[string]string)
@@ -346,6 +480,9 @@ func Generate(st *store.Store, targets []string, outDir string) error {
                                 return 0
                         }
                         return num * scale / denom
+                },
+                "isURL": func(s string) bool {
+                        return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
                 },
                 "urlsToList": func(d *ReportData) []string {
                         return d.URLs

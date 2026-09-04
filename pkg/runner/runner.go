@@ -57,6 +57,25 @@ func (r *Result) DiagString() string {
 	}
 }
 
+var (
+	disableAllTimeoutsMu sync.RWMutex
+	disableAllTimeouts   bool
+)
+
+// SetNoTimeout globally disables timeouts for all runner.Run calls.
+func SetNoTimeout(disabled bool) {
+	disableAllTimeoutsMu.Lock()
+	disableAllTimeouts = disabled
+	disableAllTimeoutsMu.Unlock()
+}
+
+// IsNoTimeout returns true if timeouts are globally disabled.
+func IsNoTimeout() bool {
+	disableAllTimeoutsMu.RLock()
+	defer disableAllTimeoutsMu.RUnlock()
+	return disableAllTimeouts
+}
+
 // Option configures a Run call
 type Option func(*runConfig)
 
@@ -99,8 +118,8 @@ func WithEnv(env []string) Option {
 // Stdout and stderr are captured separately.
 // onLine is called for stdout only.
 // Stderr is always captured into Result.Stderr for diagnostics.
-// If timeout is 0, the command runs with no deadline until it completes naturally
-// or the parent context is cancelled.
+// If timeout is 0 (or SetNoTimeout is true), the command runs with no deadline
+// until it completes naturally or the parent context is cancelled.
 func Run(ctx context.Context, name string, args []string, opts ...Option) *Result {
 	cfg := &runConfig{
 		timeout:       0, // 0 = no timeout, use parent ctx only
@@ -113,7 +132,7 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 
 	var runCtx context.Context
 	var cancel context.CancelFunc
-	if cfg.timeout > 0 {
+	if cfg.timeout > 0 && !IsNoTimeout() {
 		runCtx, cancel = context.WithTimeout(ctx, cfg.timeout)
 	} else {
 		runCtx, cancel = context.WithCancel(ctx)

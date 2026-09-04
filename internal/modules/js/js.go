@@ -369,7 +369,12 @@ func (m *Module) runSubjs(ctx context.Context, input string) {
 
 func (m *Module) runMantra(ctx context.Context, input string) {
 	start := time.Now()
-	count := strings.Count(input, "\n") + 1
+	rawLines := strings.Split(strings.TrimSpace(input), "\n")
+	if len(rawLines) > 100 {
+		rawLines = rawLines[:100]
+		input = strings.Join(rawLines, "\n")
+	}
+	count := len(rawLines)
 	m.log.Tool("mantra", fmt.Sprintf("%d JS files — pattern matching", count))
 	m.log.ToolCmd("mantra", []string{}, fmt.Sprintf("[%d URLs via stdin]", count))
 

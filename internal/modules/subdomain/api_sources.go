@@ -23,24 +23,28 @@ import (
 	"github.com/reconx/reconx/pkg/runner"
 )
 
+var defaultDialer = &net.Dialer{
+	Timeout:   10 * time.Second,
+	KeepAlive: 30 * time.Second,
+	Resolver: &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{Timeout: 4 * time.Second}
+			// Use Cloudflare DNS directly to bypass WSL2 gateway UDP drops
+			return d.DialContext(ctx, "udp4", "1.1.1.1:53")
+		},
+	},
+}
+
 var defaultTransport = &http.Transport{
 	Proxy: http.ProxyFromEnvironment,
-	DialContext: (&net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-		Resolver: &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 5 * time.Second}
-				// If local WSL resolver hangs/drops, fallback to 1.1.1.1 or 8.8.8.8
-				conn, err := d.DialContext(ctx, "udp", "1.1.1.1:53")
-				if err != nil {
-					return d.DialContext(ctx, "udp", "8.8.8.8:53")
-				}
-				return conn, nil
-			},
-		},
-	}).DialContext,
+	DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		// Force tcp4 to prevent "connect: network is unreachable" IPv6 attempts
+		if network == "tcp" {
+			network = "tcp4"
+		}
+		return defaultDialer.DialContext(ctx, network, addr)
+	},
 	MaxIdleConns:        100,
 	MaxIdleConnsPerHost: 20,
 	IdleConnTimeout:     90 * time.Second,
