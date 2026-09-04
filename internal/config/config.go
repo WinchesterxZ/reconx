@@ -373,7 +373,7 @@ timeout = 3600
 
 [tool.subfinder]
 enabled = true
-flags   = ["-all", "-recursive"]
+flags   = ["-all"]
 timeout = 600
 
 [tool.naabu]

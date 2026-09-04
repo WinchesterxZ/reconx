@@ -26,14 +26,6 @@ import (
 var defaultDialer = &net.Dialer{
 	Timeout:   10 * time.Second,
 	KeepAlive: 30 * time.Second,
-	Resolver: &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 4 * time.Second}
-			// Use Cloudflare DNS directly to bypass WSL2 gateway UDP drops
-			return d.DialContext(ctx, "udp4", "1.1.1.1:53")
-		},
-	},
 }
 
 var defaultTransport = &http.Transport{

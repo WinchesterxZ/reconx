@@ -4,8 +4,10 @@ import (
         "context"
         "fmt"
         "io"
+        "net"
         "net/http"
         "os"
+        "regexp"
         "strings"
         "sync"
         "time"
@@ -208,9 +210,8 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
                         // Tag each subdomain with the source that found it
                         // so the HTML report can filter by source.
                         added    := m.store.AddSubdomainsFromSource(filtered, t.name)
-                        if added > 0 {
-                                board.Update(t.name, len(m.store.GetSubdomains()))
-                        }
+                        m.log.Debug("%s completed for %s: %d raw, %d in-scope, %d added (store total: %d)",
+                                t.name, domain, len(results), len(filtered), added, len(m.store.GetSubdomains()))
                 }()
         }
         wg.Wait()
@@ -219,77 +220,121 @@ func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logg
 // ── Tool runners ─────────────────────────────────────────────────────────────
 
 func (m *Module) runSubfinder(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        tcfg  := m.cfg.Tools["subfinder"]
-        args  := append([]string{"-d", domain, "-silent"}, tcfg.Flags...)
+	tcfg := m.cfg.Tools["subfinder"]
+	// -nc disables ANSI escape codes in subfinder output
+	args := append([]string{"-d", domain, "-silent", "-nc"}, tcfg.Flags...)
 
-        r := runner.Run(ctx, tcfg.Path, args,
-                runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
-                runner.WithLineCallback(func(line string) { board.Update("subfinder", len(m.store.GetSubdomains())) }))
+	var count int
+	var mu sync.Mutex
+	r := runner.Run(ctx, tcfg.Path, args,
+		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
+		runner.WithLineCallback(func(line string) {
+			mu.Lock()
+			count++
+			c := count
+			mu.Unlock()
+			board.Update("subfinder", c)
+		}))
 
-        finalize(board, "subfinder", r)
-        return r.Lines, r.Stderr
+	finalize(board, "subfinder", r)
+	return r.Lines, r.Stderr
 }
 
 func (m *Module) runAssetfinder(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        tcfg  := m.cfg.Tools["assetfinder"]
+	tcfg := m.cfg.Tools["assetfinder"]
 
-        r := runner.Run(ctx, tcfg.Path, []string{"-subs-only"},
-                runner.WithStdin(domain),
-                runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second))
+	var count int
+	var mu sync.Mutex
+	r := runner.Run(ctx, tcfg.Path, []string{"-subs-only"},
+		runner.WithStdin(domain),
+		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
+		runner.WithLineCallback(func(line string) {
+			mu.Lock()
+			count++
+			c := count
+			mu.Unlock()
+			board.Update("assetfinder", c)
+		}))
 
-        finalize(board, "assetfinder", r)
-        return r.Lines, r.Stderr
+	finalize(board, "assetfinder", r)
+	return r.Lines, r.Stderr
 }
 
 func (m *Module) runFindomain(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        tcfg  := m.cfg.Tools["findomain"]
+	tcfg := m.cfg.Tools["findomain"]
 
-        r := runner.Run(ctx, tcfg.Path, []string{"-t", domain, "-q"},
-                runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second))
+	var count int
+	var mu sync.Mutex
+	r := runner.Run(ctx, tcfg.Path, []string{"-t", domain, "-q"},
+		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
+		runner.WithLineCallback(func(line string) {
+			mu.Lock()
+			count++
+			c := count
+			mu.Unlock()
+			board.Update("findomain", c)
+		}))
 
-        finalize(board, "findomain", r)
-        return r.Lines, r.Stderr
+	finalize(board, "findomain", r)
+	return r.Lines, r.Stderr
 }
 
 func (m *Module) runAmass(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        tcfg    := m.cfg.Tools["amass"]
-        timeout := 3 * time.Minute
-        if tcfg.Timeout > 0 && tcfg.Timeout < 180 {
-                timeout = time.Duration(tcfg.Timeout) * time.Second
-        }
-        // amass -timeout 3 ensures amass stops itself after 3 minutes
-        r := runner.Run(ctx, tcfg.Path,
-                []string{"enum", "-passive", "-d", domain, "-timeout", "3", "-silent"},
-                runner.WithTimeout(timeout),
-                runner.WithLineCallback(func(line string) { board.Heartbeat("amass") }),
-                runner.WithStderrCallback(func(line string) { board.Heartbeat("amass") }))
+	tcfg := m.cfg.Tools["amass"]
+	timeout := 3 * time.Minute
+	if tcfg.Timeout > 0 && tcfg.Timeout < 180 {
+		timeout = time.Duration(tcfg.Timeout) * time.Second
+	}
+	// amass -timeout 3 ensures amass stops itself after 3 minutes
+	var count int
+	var mu sync.Mutex
+	r := runner.Run(ctx, tcfg.Path,
+		[]string{"enum", "-passive", "-d", domain, "-timeout", "3", "-silent"},
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) {
+			mu.Lock()
+			count++
+			c := count
+			mu.Unlock()
+			board.Update("amass", c)
+		}),
+		runner.WithStderrCallback(func(line string) { board.Heartbeat("amass") }))
 
-        if r.IsTimeout() {
-                board.Timeout("amass", len(r.Lines))
-        } else if r.ExitCode == 1 || r.ExitCode == 2 {
-                if len(r.Lines) > 0 {
-                        board.Done("amass", len(r.Lines))
-                } else {
-                        board.Fail("amass", fmt.Sprintf("exit %d", r.ExitCode))
-                }
-        } else if r.Err != nil {
-                board.Fail("amass", r.DiagString())
-        } else {
-                board.Done("amass", len(r.Lines))
-        }
-        return r.Lines, r.Stderr
+	if r.IsTimeout() {
+		board.Timeout("amass", len(r.Lines))
+	} else if r.ExitCode == 1 || r.ExitCode == 2 {
+		if len(r.Lines) > 0 {
+			board.Done("amass", len(r.Lines))
+		} else {
+			board.Fail("amass", fmt.Sprintf("exit %d", r.ExitCode))
+		}
+	} else if r.Err != nil {
+		board.Fail("amass", r.DiagString())
+	} else {
+		board.Done("amass", len(r.Lines))
+	}
+	return r.Lines, r.Stderr
 }
 
 func (m *Module) runChaos(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        tcfg  := m.cfg.Tools["chaos"]
-        token := m.cfg.Tokens["chaos"]
+	tcfg := m.cfg.Tools["chaos"]
+	token := m.cfg.Tokens["chaos"]
 
-        r := runner.Run(ctx, tcfg.Path, []string{"-d", domain, "-silent"},
-                runner.WithEnv([]string{"PDCP_API_KEY=" + token}),
-                runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second))
+	var count int
+	var mu sync.Mutex
+	r := runner.Run(ctx, tcfg.Path, []string{"-d", domain, "-silent"},
+		runner.WithEnv([]string{"PDCP_API_KEY=" + token}),
+		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
+		runner.WithLineCallback(func(line string) {
+			mu.Lock()
+			count++
+			c := count
+			mu.Unlock()
+			board.Update("chaos", c)
+		}))
 
-        finalize(board, "chaos", r)
-        return r.Lines, r.Stderr
+	finalize(board, "chaos", r)
+	return r.Lines, r.Stderr
 }
 
 func (m *Module) runGithubSubs(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
@@ -548,20 +593,48 @@ func finalize(board *logger.ProgressBoard, name string, r *runner.Result) {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+var ansiEscapeRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
 func cleanLines(lines []string) []string {
-        out := make([]string, 0, len(lines))
-        for _, l := range lines {
-                l = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(l), "*."))
-                if l != "" && isValidDomain(l) {
-                        out = append(out, l)
-                }
-        }
-        return out
+	out := make([]string, 0, len(lines))
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if strings.Contains(l, "\x1b") {
+			l = ansiEscapeRegex.ReplaceAllString(l, "")
+		}
+		// Discard lines with spaces or invalid control characters
+		if strings.ContainsAny(l, " \t\r\n/\\") {
+			continue
+		}
+		// If line is comma-separated (e.g. "domain,ip" or multiple domains)
+		if strings.Contains(l, ",") {
+			parts := strings.Split(l, ",")
+			for _, p := range parts {
+				p = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(p), "*."))
+				if host, _, err := net.SplitHostPort(p); err == nil {
+					p = host
+				}
+				if isValidDomain(p) {
+					out = append(out, p)
+				}
+			}
+			continue
+		}
+
+		l = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(l), "*."))
+		if host, _, err := net.SplitHostPort(l); err == nil {
+			l = host
+		}
+		if l != "" && isValidDomain(l) {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 func isValidDomain(s string) bool {
-        return s != "" && len(s) <= 253 && strings.Contains(s, ".") &&
-                !strings.ContainsAny(s, " \n\t/\\")
+	return s != "" && len(s) <= 253 && strings.Contains(s, ".") &&
+		!strings.ContainsAny(s, " \n\t/\\")
 }
 
 // findWordlist finds a DNS brute-force wordlist. Priority:
