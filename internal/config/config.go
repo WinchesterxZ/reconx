@@ -107,7 +107,7 @@ func DefaultConfig() *Config {
                         // ── Subdomain tools ──────────────────────────────────────────────
                         "subfinder": {
                                 Enabled: true, Path: "subfinder",
-                                Flags:   []string{"-all", "-recursive"},
+                                Flags:   []string{},
                                 Timeout: 600, // 10 min — large targets need time
                         },
                         "amass": {
@@ -294,7 +294,7 @@ func (c *Config) LoadScope(path string) error {
                 if line == "" || strings.HasPrefix(line, "#") {
                         continue
                 }
-                if strings.HasPrefix(line, "-") {
+                if strings.HasPrefix(line, "-") || strings.HasPrefix(line, "!") {
                         c.Scope.OutOfScope = append(c.Scope.OutOfScope, strings.TrimSpace(line[1:]))
                 } else {
                         c.Scope.InScope = append(c.Scope.InScope, strings.TrimSpace(strings.TrimPrefix(line, "+")))
@@ -373,7 +373,7 @@ timeout = 3600
 
 [tool.subfinder]
 enabled = true
-flags   = ["-all"]
+flags   = []
 timeout = 600
 
 [tool.naabu]

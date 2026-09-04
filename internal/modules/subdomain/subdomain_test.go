@@ -1,7 +1,9 @@
 package subdomain
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/reconx/reconx/internal/config"
 	"github.com/reconx/reconx/internal/scope"
@@ -36,13 +38,23 @@ func TestCleanLines(t *testing.T) {
 	}
 }
 
-func TestSubdomainModuleCreation(t *testing.T) {
+func TestSubfinderMyFitnessPal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping live network test in short mode")
+	}
 	cfg := config.DefaultConfig()
 	log := logger.New(false, "")
-	st := store.New("test-subdomain")
+	st := store.New("test-debug")
 	sc := scope.New(cfg)
 	m := New(cfg, st, sc, log, t.TempDir())
-	if m == nil {
-		t.Fatal("expected non-nil Module")
-	}
+	board := log.NewProgressBoard()
+	defer board.Stop()
+
+	t0 := time.Now()
+	lines, stderr := m.runSubfinder(context.Background(), "myfitnesspal.com", board)
+	t.Logf("Elapsed: %v", time.Since(t0))
+	t.Logf("Lines count: %d", len(lines))
+	t.Logf("Lines (first 10): %v", lines[:min(10, len(lines))])
+	t.Logf("Stderr count: %d", len(stderr))
+	t.Logf("Stderr: %v", stderr)
 }
