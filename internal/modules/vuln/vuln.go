@@ -113,7 +113,6 @@ func (m *Module) Run(ctx context.Context) error {
 		baseArgs := []string{
 			"-l", g.targetFile,
 			"-jsonl",
-			"-silent",
 			"-no-color",
 			"-retries", g.retries,
 			"-timeout", g.timeoutSec,
@@ -125,6 +124,17 @@ func (m *Module) Run(ctx context.Context) error {
 		}
 		baseArgs = append(baseArgs, tcfg.Flags...)
 
+		// Per-category timeouts scale with target count: the static defaults
+		// (120-600s) were tuned for ~20 targets. Against 181 WAF-protected
+		// hosts at rate-limit 30, the exposures category alone ran for
+		// 2h17m before the user killed it. Factor: +1 step per 50 targets,
+		// capped at 30 min per category.
+		scale := (g.count + 49) / 50 // ceil(count/50)
+		if scale < 1 {
+			scale = 1
+		}
+		const maxCatTimeout = 30 * time.Minute
+
 		for _, cat := range categories {
 			select {
 			case <-ctx.Done():
@@ -134,6 +144,12 @@ func (m *Module) Run(ctx context.Context) error {
 			}
 
 			args := append(append([]string{}, baseArgs...), "-t", cat.template)
+			// config flags like -severity critical,high,medium would filter
+			// out tech-detect's info findings entirely — override AFTER the
+			// flags for that category (nuclei keeps the last value).
+			if cat.name == "tech-detect" {
+				args = append(args, "-severity", "info,low,medium,high,critical")
+			}
 			toolTag := fmt.Sprintf("nuclei:%s:%s", g.label, cat.name)
 			m.log.Tool(toolTag, fmt.Sprintf("%d targets", g.count))
 			m.log.ToolCmd("nuclei", args, "")
@@ -142,7 +158,10 @@ func (m *Module) Run(ctx context.Context) error {
 			catFindings := 0
 			parseErrors := 0
 
-			catTimeout := time.Duration(cat.timeout) * time.Second
+			catTimeout := time.Duration(cat.timeout*scale) * time.Second
+			if catTimeout > maxCatTimeout {
+				catTimeout = maxCatTimeout
+			}
 			if m.cfg.NoTimeout || runner.IsNoTimeout() {
 				catTimeout = 0
 			}

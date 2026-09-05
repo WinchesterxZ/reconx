@@ -519,6 +519,27 @@ if [ -s "$HOME/.config/reconx/resolvers.txt" ] && [ ! -s "$HOME/.config/puredns/
         success "Resolvers mirrored → $HOME/.config/puredns/resolvers.txt (puredns default)"
 fi
 
+# Fix "permission denied" when reconx executes tools from ~/go/bin — some
+# install methods (manual copy, tar extraction) leave binaries non-executable.
+if [ -d "$HOME/go/bin" ]; then
+    chmod +x "$HOME/go/bin/"* 2>/dev/null && \
+        success "Ensured ~/go/bin/* executables are +x"
+fi
+
+# DNS brute-force wordlist — without it puredns/shuffledns/dnsx-brute are
+# skipped entirely ("no wordlist found") and the brute phase yields nothing.
+WORDLIST_DIR="$HOME/.config/reconx/wordlists"
+mkdir -p "$WORDLIST_DIR"
+if [ -s "$WORDLIST_DIR/subdomains.txt" ]; then
+    success "DNS wordlist already present ($WORDLIST_DIR/subdomains.txt)"
+else
+    wget -q --timeout=30 \
+        "https://raw.githubusercontent.com/danielmiessler/SecLists/master/Discovery/DNS/subdomains-top1million-110000.txt" \
+        -O "$WORDLIST_DIR/subdomains.txt" && \
+        success "DNS wordlist → $WORDLIST_DIR/subdomains.txt ($(wc -l < "$WORDLIST_DIR/subdomains.txt") entries)" || \
+        warn "DNS wordlist download failed — brute-force will be skipped"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 10b — Additional tools: tlsx, feroxbuster, massdns
 # ─────────────────────────────────────────────────────────────────────────────

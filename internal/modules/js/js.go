@@ -187,7 +187,13 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 			if err != nil {
 				return
 			}
-			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+			req.Header.Set("Accept", "*/*")
+			req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+			// CDNs like CloudFront sometimes reject cross-origin bare fetches
+			if req.URL.Host != "" {
+				req.Header.Set("Referer", "https://"+req.URL.Host+"/")
+			}
 			if m.cfg.BugBountyHeader != "" {
 				parts := strings.SplitN(m.cfg.BugBountyHeader, ":", 2)
 				if len(parts) == 2 {

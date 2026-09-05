@@ -697,14 +697,17 @@ func isValidDomain(s string) bool {
 
 // findWordlist finds a DNS brute-force wordlist. Priority:
 //  1. cfg.WordlistPath (from --wordlist flag or config)
-//  2. Well-known SecLists paths
-//  3. ./wordlists/subdomains.txt
+//  2. reconx config dir (downloaded by install.sh)
+//  3. Well-known SecLists paths
+//  4. ./wordlists/subdomains.txt
 func findWordlist(cfg *config.Config) string {
         // Allow user override via config / CLI flag
         if cfg != nil && cfg.WordlistPath != "" && util.FileExists(cfg.WordlistPath) {
                 return cfg.WordlistPath
         }
+        home, _ := os.UserHomeDir()
         for _, p := range []string{
+                filepath.Join(home, ".config", "reconx", "wordlists", "subdomains.txt"),
                 "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-20000.txt",
                 "/usr/share/wordlists/seclists/Discovery/DNS/subdomains-top1million-5000.txt",
                 "/usr/share/wordlists/seclists/Discovery/DNS/bitquark-subdomains-top100000.txt",
