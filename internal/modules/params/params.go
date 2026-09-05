@@ -657,6 +657,33 @@ func (m *Module) parseDalfoxJSON(jsonFile string) []string {
 	return params
 }
 
+// getJSFlagSupported reports whether the installed getJS supports the given
+// flag (checked against --help output). Cache the probe result — getJS runs
+// once per scan but the probe is cheap to reuse.
+var (
+	getJSFlagCacheMu    sync.Mutex
+	getJSFlagCache      = map[string]bool{}
+	getJSFlagCacheLoaded = false
+)
+
+func getJSFlagSupported(flag string) bool {
+	getJSFlagCacheMu.Lock()
+	defer getJSFlagCacheMu.Unlock()
+	if getJSFlagCacheLoaded {
+		return getJSFlagCache[flag]
+	}
+	getJSFlagCacheLoaded = true
+	r := runner.Run(context.Background(), "getJS", []string{"--help"}, runner.WithTimeout(10*time.Second))
+	for _, line := range append(r.Lines, r.Stderr...) {
+		ll := strings.ToLower(strings.TrimSpace(line))
+		if strings.HasPrefix(ll, "--"+strings.ToLower(flag)) {
+			getJSFlagCache[flag] = true
+			break
+		}
+	}
+	return getJSFlagCache[flag]
+}
+
 // runGetJS runs getJS to find JS files from live hosts and extract endpoint URLs.
 func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
 	var targetURLs []string
@@ -693,7 +720,12 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
 	tmpFile.Close()
 
 	outFile := filepath.Join(store.DataDir(m.outDir), "getjs_endpoints.txt")
-	args := []string{"--input", tmpFile.Name(), "--output", outFile, "--complete", "--insecure"}
+	args := []string{"--input", tmpFile.Name(), "--output", outFile, "--complete"}
+	// Older getJS builds don't have --insecure — passing it makes the tool
+	// exit 2 with "flag provided but not defined". Probe --help once.
+	if getJSFlagSupported("insecure") {
+		args = append(args, "--insecure")
+	}
 	if m.cfg.BugBountyHeader != "" {
 		args = append(args, "-H", m.cfg.BugBountyHeader)
 	}

@@ -138,16 +138,20 @@ func (m *Module) Run(ctx context.Context) error {
 	return nil
 }
 
-// downloadJSFiles downloads JS files in parallel to destDir, capped at 300 files.
+// downloadJSFiles downloads JS files in parallel to destDir, capped at 1000 files.
 // Returns a map of filename -> original URL.
+//
+// Timeout matters a lot here: gitleaks/trufflehog/secretfinder can only scan
+// what we download. A 5s per-file timeout got 44/300 files on real targets
+// (large JS bundles + slow CDNs) — 30s gets the vast majority.
 func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir string) map[string]string {
 	_ = os.MkdirAll(destDir, 0755)
 	urlMap := make(map[string]string)
 	var mu sync.Mutex
 
-	cap := len(jsFiles)
-	if cap > 300 {
-		cap = 300
+	limit := len(jsFiles)
+	if limit > 1000 {
+		limit = 1000
 	}
 
 	tr := &http.Transport{
@@ -155,16 +159,16 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 	}
 	client := &http.Client{
 		Transport: tr,
-		Timeout:   5 * time.Second,
+		Timeout:   30 * time.Second,
 	}
 
-	sem := make(chan struct{}, 25)
+	sem := make(chan struct{}, 40)
 	var wg sync.WaitGroup
 
-	m.log.Info("Downloading %d JS files for deep secret inspection...", cap)
+	m.log.Info("Downloading %d JS files for deep secret inspection...", limit)
 	downloaded := 0
 
-	for i := 0; i < cap; i++ {
+	for i := 0; i < limit; i++ {
 		u := jsFiles[i]
 		fileName := fmt.Sprintf("js_%d.js", i)
 		filePath := filepath.Join(destDir, fileName)
@@ -201,7 +205,7 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 				return
 			}
 
-			lr := io.LimitReader(resp.Body, 5*1024*1024)
+			lr := io.LimitReader(resp.Body, 10*1024*1024)
 			data, err := io.ReadAll(lr)
 			if err != nil || len(data) < 10 {
 				return
@@ -218,7 +222,7 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 	}
 
 	wg.Wait()
-	m.log.Info("Downloaded %d JS files to %s/", downloaded, destDir)
+	m.log.Info("Downloaded %d/%d JS files to %s/ (gitleaks+trufflehog scan these)", downloaded, limit, destDir)
 
 	if mapData, err := json.MarshalIndent(urlMap, "", "  "); err == nil {
 		_ = os.WriteFile(filepath.Join(destDir, "url_map.json"), mapData, 0644)
@@ -370,10 +374,6 @@ func (m *Module) runSubjs(ctx context.Context, input string) {
 func (m *Module) runMantra(ctx context.Context, input string) {
 	start := time.Now()
 	rawLines := strings.Split(strings.TrimSpace(input), "\n")
-	if len(rawLines) > 100 {
-		rawLines = rawLines[:100]
-		input = strings.Join(rawLines, "\n")
-	}
 	count := len(rawLines)
 	m.log.Tool("mantra", fmt.Sprintf("%d JS files — pattern matching", count))
 	m.log.ToolCmd("mantra", []string{}, fmt.Sprintf("[%d URLs via stdin]", count))
