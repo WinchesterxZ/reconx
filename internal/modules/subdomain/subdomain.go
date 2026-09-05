@@ -87,10 +87,11 @@ func (m *Module) Run(ctx context.Context) error {
         }
 
         wg.Wait()
-        board.Stop()
 
         total := len(m.store.GetSubdomains())
         m.log.PhaseComplete("Subdomain Enumeration", total, time.Since(start))
+        m.printSourceSummary(board)
+        board.Stop()
         // ── massdns resolve (optional, runs if massdns binary is available) ────────
         // Much faster than puredns/dnsx for very large subdomain sets (10k+).
         // Results are merged back into store so later phases see everything.
@@ -108,6 +109,42 @@ func (m *Module) Run(ctx context.Context) error {
 		m.log.Warn("Failed to save subdomains.txt: %v", err)
 	}
 	return nil
+}
+
+// printSourceSummary prints a per-source yield table after enumeration so
+// weak/failed sources are visible without grepping the debug log. This is
+// the "why did I get fewer domains than subfinder alone?" answer at a glance.
+func (m *Module) printSourceSummary(board *logger.ProgressBoard) {
+	stats := board.SourceStats()
+	if len(stats) == 0 {
+		return
+	}
+	m.log.Separator()
+	m.log.Info("Per-source yield:")
+	for _, t := range stats {
+		switch t.State {
+		case "done", "timeout":
+			if t.Count > 0 {
+				m.log.Info("  ✓ %-18s %4d results%s", t.Name, t.Count, timeoutSuffix(t.State))
+			} else {
+				m.log.Info("  ? %-18s    0 results (source returned nothing)", t.Name)
+			}
+		case "error":
+			m.log.Warn("  ✗ %-18s failed: %s", t.Name, t.Message)
+		case "skipped":
+			m.log.Warn("  ○ %-18s skipped: %s", t.Name, t.Message)
+		default:
+			m.log.Info("  ? %-18s still %s", t.Name, t.State)
+		}
+	}
+	m.log.Separator()
+}
+
+func timeoutSuffix(state string) string {
+	if state == "timeout" {
+		return " (timed out — partial)"
+	}
+	return ""
 }
 
 func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logger.ProgressBoard) {

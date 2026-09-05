@@ -2,6 +2,7 @@ package logger
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -139,6 +140,28 @@ func (b *ProgressBoard) Done(name string, count int) {
 		t.Message = fmt.Sprintf("%d results", count)
 		t.lastActivity = time.Now()
 	}
+}
+
+// SourceStats returns a snapshot of per-tool results and states, sorted by
+// result count descending. Used to print the per-source yield summary after
+// a phase completes so low-yield or skipped sources are immediately visible
+// without digging through the debug log.
+func (b *ProgressBoard) SourceStats() []ToolStatus {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]ToolStatus, 0, len(b.tools))
+	for _, t := range b.tools {
+		out = append(out, *t)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].State == out[j].State {
+			return out[i].Count > out[j].Count
+		}
+		// done/timeout first, then error, then skipped
+		rank := map[string]int{"done": 0, "timeout": 1, "running": 2, "error": 3, "skipped": 4}
+		return rank[out[i].State] < rank[out[j].State]
+	})
+	return out
 }
 
 // Fail marks a tool as failed
