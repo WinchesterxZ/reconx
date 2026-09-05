@@ -669,19 +669,21 @@ var (
 func getJSFlagSupported(flag string) bool {
 	getJSFlagCacheMu.Lock()
 	defer getJSFlagCacheMu.Unlock()
-	if getJSFlagCacheLoaded {
-		return getJSFlagCache[flag]
-	}
-	getJSFlagCacheLoaded = true
-	r := runner.Run(context.Background(), "getJS", []string{"--help"}, runner.WithTimeout(10*time.Second))
-	for _, line := range append(r.Lines, r.Stderr...) {
-		ll := strings.ToLower(strings.TrimSpace(line))
-		if strings.HasPrefix(ll, "--"+strings.ToLower(flag)) {
-			getJSFlagCache[flag] = true
-			break
+	if !getJSFlagCacheLoaded {
+		getJSFlagCacheLoaded = true
+		r := runner.Run(context.Background(), "getJS", []string{"--help"}, runner.WithTimeout(10*time.Second))
+		for _, line := range append(r.Lines, r.Stderr...) {
+			line = strings.TrimSpace(line)
+			for _, part := range strings.Fields(line) {
+				clean := strings.TrimPrefix(strings.TrimPrefix(part, "--"), "-")
+				clean = strings.TrimSuffix(clean, ",")
+				if clean != "" {
+					getJSFlagCache[strings.ToLower(clean)] = true
+				}
+			}
 		}
 	}
-	return getJSFlagCache[flag]
+	return getJSFlagCache[strings.ToLower(flag)]
 }
 
 // runGetJS runs getJS to find JS files from live hosts and extract endpoint URLs.
@@ -726,8 +728,12 @@ func (m *Module) runGetJS(ctx context.Context, paramsDir string) {
 	if getJSFlagSupported("insecure") {
 		args = append(args, "--insecure")
 	}
+	if getJSFlagSupported("threads") {
+		args = append(args, "--threads", "10")
+	}
 	if m.cfg.BugBountyHeader != "" {
-		args = append(args, "-H", m.cfg.BugBountyHeader)
+		// Use --header which is accepted by both pflag and standard flag getJS builds
+		args = append(args, "--header", m.cfg.BugBountyHeader)
 	}
 
 	timeout := 10 * time.Minute

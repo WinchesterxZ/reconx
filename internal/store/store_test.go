@@ -156,3 +156,29 @@ func TestAddIPRange_Dedup(t *testing.T) {
 		t.Errorf("expected 2 IP ranges after dedup, got %d", len(ranges))
 	}
 }
+
+// TestAddSecret_DedupAndStripANSI tests secret deduplication and ANSI stripping.
+func TestAddSecret_DedupAndStripANSI(t *testing.T) {
+	s := New("test-scan")
+	s.AddSecret(&Secret{
+		Type:   "API Key",
+		Value:  "\x1b[32mAIzaSyD-Secret123456\x1b[0m",
+		Source: "mantra",
+		File:   "https://example.com/app.js",
+	})
+	// Duplicate with different ANSI or same content
+	s.AddSecret(&Secret{
+		Type:   "API Key",
+		Value:  "AIzaSyD-Secret123456",
+		Source: "gitleaks",
+		File:   "https://example.com/app.js",
+	})
+
+	if len(s.Secrets) != 1 {
+		t.Fatalf("expected 1 secret after dedup, got %d", len(s.Secrets))
+	}
+	if s.Secrets[0].Value != "AIzaSyD-Secret123456" {
+		t.Errorf("expected ANSI stripped value, got %q", s.Secrets[0].Value)
+	}
+}
+

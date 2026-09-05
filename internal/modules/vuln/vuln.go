@@ -73,18 +73,18 @@ func (m *Module) Run(ctx context.Context) error {
 	m.log.Info("nuclei targets — non-WAF: %d URLs (fast) | WAF-protected: %d URLs (stealth)",
 		len(nowafURLs), len(wafURLs))
 
-	// Template categories ordered by speed (fast first)
+	// Template categories ordered by speed (fast first) — tech-detect is
+	// handled in the alive phase by httpx and does NOT belong in vuln scanning.
 	categories := []struct {
 		name     string
 		template string
 		timeout  int // per-category timeout in seconds
 	}{
-		{"tech-detect", "http/technologies", 120},
-		{"exposures", "http/exposures", 300},
-		{"misconfigs", "http/misconfiguration", 300},
+		{"cves", "http/cves", 300},
+		{"misconfigs", "http/misconfiguration", 240},
 		{"takeovers", "http/takeovers", 180},
-		{"default-logins", "http/default-logins", 300},
-		{"cves", "http/cves", 600},
+		{"exposures", "http/exposures", 300},
+		{"default-logins", "http/default-logins", 240},
 	}
 
 	totalFindings := 0
@@ -99,8 +99,8 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	groups := []targetGroup{
-		{label: "non-waf", targetFile: targetFileNoWAF, count: len(nowafURLs), rateLimit: "150", retries: "2", timeoutSec: "10"},
-		{label: "waf", targetFile: targetFileWAF, count: len(wafURLs), rateLimit: "30", retries: "1", timeoutSec: "15"},
+		{label: "non-waf", targetFile: targetFileNoWAF, count: len(nowafURLs), rateLimit: "150", retries: "2", timeoutSec: "7"},
+		{label: "waf", targetFile: targetFileWAF, count: len(wafURLs), rateLimit: "30", retries: "1", timeoutSec: "7"},
 	}
 
 	for _, g := range groups {
@@ -117,6 +117,7 @@ func (m *Module) Run(ctx context.Context) error {
 			"-retries", g.retries,
 			"-timeout", g.timeoutSec,
 			"-rate-limit", g.rateLimit,
+			"-max-host-error", "30",
 		}
 
 		if m.cfg.BugBountyHeader != "" {
@@ -124,16 +125,13 @@ func (m *Module) Run(ctx context.Context) error {
 		}
 		baseArgs = append(baseArgs, tcfg.Flags...)
 
-		// Per-category timeouts scale with target count: the static defaults
-		// (120-600s) were tuned for ~20 targets. Against 181 WAF-protected
-		// hosts at rate-limit 30, the exposures category alone ran for
-		// 2h17m before the user killed it. Factor: +1 step per 50 targets,
-		// capped at 30 min per category.
+		// Per-category timeouts scale with target count: factor +1 step per 50 targets,
+		// capped at 25 min per category (or 35 min under --no-timeout to avoid hanging indefinitely).
 		scale := (g.count + 49) / 50 // ceil(count/50)
 		if scale < 1 {
 			scale = 1
 		}
-		const maxCatTimeout = 30 * time.Minute
+		const maxCatTimeout = 25 * time.Minute
 
 		for _, cat := range categories {
 			select {
@@ -144,12 +142,6 @@ func (m *Module) Run(ctx context.Context) error {
 			}
 
 			args := append(append([]string{}, baseArgs...), "-t", cat.template)
-			// config flags like -severity critical,high,medium would filter
-			// out tech-detect's info findings entirely — override AFTER the
-			// flags for that category (nuclei keeps the last value).
-			if cat.name == "tech-detect" {
-				args = append(args, "-severity", "info,low,medium,high,critical")
-			}
 			toolTag := fmt.Sprintf("nuclei:%s:%s", g.label, cat.name)
 			m.log.Tool(toolTag, fmt.Sprintf("%d targets", g.count))
 			m.log.ToolCmd("nuclei", args, "")
@@ -163,7 +155,7 @@ func (m *Module) Run(ctx context.Context) error {
 				catTimeout = maxCatTimeout
 			}
 			if m.cfg.NoTimeout || runner.IsNoTimeout() {
-				catTimeout = 0
+				catTimeout = 35 * time.Minute
 			}
 
 			r := runner.Run(ctx, nucleiPath, args,
@@ -229,7 +221,7 @@ func (m *Module) logFindingSummary() {
                 counts[strings.ToLower(f.Severity)]++
         }
         parts := []string{}
-        for _, sev := range []string{"critical", "high", "medium", "low", "info"} {
+        for _, sev := range []string{"critical", "high", "medium", "low"} {
                 if n := counts[sev]; n > 0 {
                         parts = append(parts, fmt.Sprintf("%s:%d", strings.ToUpper(sev), n))
                 }
@@ -257,11 +249,11 @@ func parseNucleiLine(line string) *store.Finding {
         }
 
         severity := strings.ToLower(util.JsonStr(line, "severity"))
-        if severity == "" {
-                severity = "info"
+        // Discard purely informational findings, technology fingerprints, and unknown severities.
+        // The vulnerability report only tracks actionable security issues (critical, high, medium, low).
+        if severity == "" || severity == "info" || severity == "unknown" {
+                return nil
         }
-        // Note: we no longer skip info-severity findings.
-        // Tech-detect template results are info level but important for the report.
 
         target := util.JsonStr(line, "matched-at")
         if target == "" {

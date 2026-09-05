@@ -490,6 +490,24 @@ else
     rm -rf "$TMP_PS"
 fi
 
+# SecretFinder — install from GitHub
+step "Installing secretfinder"
+if command -v secretfinder &>/dev/null; then
+    success "secretfinder already installed"
+else
+    info "Cloning and installing SecretFinder..."
+    TMP_SF=$(mktemp -d)
+    git clone -q --depth=1 https://github.com/m4ll0k/SecretFinder "$TMP_SF/SecretFinder" 2>/dev/null && \
+        pip3 install -r "$TMP_SF/SecretFinder/requirements.txt" --break-system-packages --quiet 2>/dev/null && \
+        mkdir -p "$HOME/.local/share/SecretFinder" "$HOME/.local/bin" && \
+        cp -r "$TMP_SF/SecretFinder"/* "$HOME/.local/share/SecretFinder/" 2>/dev/null && \
+        ln -sf "$HOME/.local/share/SecretFinder/SecretFinder.py" "$HOME/.local/bin/secretfinder" && \
+        chmod +x "$HOME/.local/bin/secretfinder" "$HOME/.local/share/SecretFinder/SecretFinder.py" 2>/dev/null && \
+        success "secretfinder installed" || \
+        warn "secretfinder install failed"
+    rm -rf "$TMP_SF"
+fi
+
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 10 — Nuclei templates + DNS resolvers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -680,7 +698,7 @@ ALL_TOOLS=(
     httpx curl naabu
     waybackurls waymore gau gauplus katana hakrawler gospider paramspider
     s3scanner cloud_enum corsy
-    mantra jsecret subjs trufflehog
+    secretfinder mantra jsecret subjs trufflehog
     nuclei
     reconx
 )

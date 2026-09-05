@@ -35,6 +35,24 @@ func (m *Module) Run(ctx context.Context) error {
 	m.log.Phase("JS & Secret Analysis",
 		"JS Download → SecretFinder → Gitleaks → TruffleHog Verification")
 
+	// ── Pre-step: Discover active JS files from live web hosts ─────────────
+	if runner.IsAvailable("subjs") {
+		var liveURLs []string
+		for _, h := range m.store.GetHosts() {
+			if u, ok := h.Meta["url"]; ok && u != "" {
+				liveURLs = append(liveURLs, u)
+			} else {
+				liveURLs = append(liveURLs, "https://"+h.Domain)
+			}
+		}
+		if len(liveURLs) > 0 {
+			if len(liveURLs) > 100 {
+				liveURLs = liveURLs[:100]
+			}
+			m.runSubjsOnLive(ctx, strings.Join(liveURLs, "\n"))
+		}
+	}
+
 	start := time.Now()
 	jsFiles := m.store.GetJSFiles()
 
@@ -53,6 +71,21 @@ func (m *Module) Run(ctx context.Context) error {
 	// ── Step 1: Download JS files into data/js_downloads/ ───────────────────
 	jsDownloadsDir := filepath.Join(dataDir, "js_downloads")
 	urlMap := m.downloadJSFiles(ctx, jsFiles, jsDownloadsDir)
+
+	// Build target URL list for mantra and jsecret:
+	// Prioritize the ALIVE/downloaded JS URLs (from urlMap) to avoid hanging on dead 404/403 archives.
+	var aliveURLs []string
+	seenAlive := make(map[string]bool)
+	for _, origURL := range urlMap {
+		if origURL != "" && !seenAlive[origURL] {
+			seenAlive[origURL] = true
+			aliveURLs = append(aliveURLs, origURL)
+		}
+	}
+	urlInput := strings.Join(aliveURLs, "\n")
+	if len(aliveURLs) == 0 {
+		urlInput = strings.Join(jsFiles, "\n")
+	}
 
 	input := strings.Join(jsFiles, "\n")
 	var wg sync.WaitGroup
@@ -102,14 +135,14 @@ func (m *Module) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			m.runMantra(ctx, input)
+			m.runMantra(ctx, urlInput)
 		}()
 	}
 	if runner.IsAvailable("jsecret") {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			m.runJsecret(ctx, input)
+			m.runJsecret(ctx, urlInput)
 		}()
 	}
 
@@ -150,8 +183,8 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 	var mu sync.Mutex
 
 	limit := len(jsFiles)
-	if limit > 1000 {
-		limit = 1000
+	if limit > 2500 {
+		limit = 2500
 	}
 
 	tr := &http.Transport{
@@ -169,7 +202,12 @@ func (m *Module) downloadJSFiles(ctx context.Context, jsFiles []string, destDir 
 	downloaded := 0
 
 	for i := 0; i < limit; i++ {
-		u := jsFiles[i]
+		u := strings.TrimSpace(jsFiles[i])
+		if strings.HasPrefix(u, "//") {
+			u = "https:" + u
+		} else if !strings.HasPrefix(u, "http://") && !strings.HasPrefix(u, "https://") {
+			u = "https://" + u
+		}
 		fileName := fmt.Sprintf("js_%d.js", i)
 		filePath := filepath.Join(destDir, fileName)
 
@@ -291,7 +329,7 @@ func (m *Module) runSecretFinder(ctx context.Context, jsDir string, urlMap map[s
 					if len(parts) == 2 {
 						secType := strings.TrimSpace(parts[0])
 						secVal := strings.TrimSpace(parts[1])
-						if secVal != "" && secType != "" {
+						if secVal != "" && secType != "" && isValidSecretValue(secVal) {
 							mu.Lock()
 							m.store.AddSecret(&store.Secret{
 								Type:   secType,
@@ -316,9 +354,6 @@ func (m *Module) runSecretFinder(ctx context.Context, jsDir string, urlMap map[s
 	m.log.ToolDone("secretfinder", secretCount, time.Since(start))
 }
 
-
-
-
 // detectTrufflehogV3 returns true if the installed trufflehog is v3+
 // (which removed --results=verified in favor of --include-detectors/--exclude-detectors).
 func (m *Module) detectTrufflehogV3() bool {
@@ -339,6 +374,39 @@ func (m *Module) detectTrufflehogV3() bool {
 		}
 	}
 	return false
+}
+
+// runSubjsOnLive runs subjs against live web hosts to discover active JS files.
+func (m *Module) runSubjsOnLive(ctx context.Context, input string) {
+	start := time.Now()
+	rawLines := strings.Split(strings.TrimSpace(input), "\n")
+	count := len(rawLines)
+	m.log.Tool("subjs", fmt.Sprintf("%d live hosts — extracting active JS files", count))
+
+	tcfg := m.cfg.Tools["subjs"]
+	timeout := 45 * time.Second
+	if tcfg.Timeout > 0 {
+		timeout = time.Duration(tcfg.Timeout) * time.Second
+	}
+
+	r := runner.Run(ctx, "subjs", nil,
+		runner.WithStdin(input),
+		runner.WithTimeout(timeout),
+		runner.WithStderrCallback(func(line string) { m.log.Debug("subjs[live]: %s", line) }))
+
+	newJS := 0
+	for _, line := range r.Lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "http") && strings.Contains(strings.ToLower(line), ".js") {
+			if m.store.AddJSFile(line) {
+				newJS++
+			}
+		}
+	}
+	m.log.ToolDone("subjs", len(r.Lines), time.Since(start))
+	if newJS > 0 {
+		m.log.Info("subjs: discovered %d active JS files from live hosts", newJS)
+	}
 }
 
 func (m *Module) runSubjs(ctx context.Context, input string) {
@@ -382,11 +450,11 @@ func (m *Module) runMantra(ctx context.Context, input string) {
 	rawLines := strings.Split(strings.TrimSpace(input), "\n")
 	count := len(rawLines)
 	m.log.Tool("mantra", fmt.Sprintf("%d JS files — pattern matching", count))
-	m.log.ToolCmd("mantra", []string{}, fmt.Sprintf("[%d URLs via stdin]", count))
+	m.log.ToolCmd("mantra", []string{"-s", "-t", "50"}, fmt.Sprintf("[%d URLs via stdin]", count))
 
 	secretCount := 0
 	extractFileAndValue := func(line string) (string, string) {
-		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(util.StripANSI(line))
 		file := ""
 		val := line
 		fields := strings.Fields(line)
@@ -405,18 +473,26 @@ func (m *Module) runMantra(ctx context.Context, input string) {
 	}
 
 	tcfg := m.cfg.Tools["mantra"]
-	timeout := time.Duration(tcfg.Timeout) * time.Second
+	timeout := 5 * time.Minute
+	if tcfg.Timeout > 0 {
+		timeout = time.Duration(tcfg.Timeout) * time.Second
+	}
 
-	r := runner.Run(ctx, "mantra", nil,
+	r := runner.Run(ctx, "mantra", []string{"-s", "-t", "50"},
 		runner.WithStdin(input),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("mantra: %s", line) }),
 		runner.WithLineCallback(func(line string) {
+			line = util.StripANSI(line)
 			if !isSecretLine(line) {
 				return
 			}
-			t := classifySecret(line)
 			file, val := extractFileAndValue(line)
+			val = strings.TrimSpace(util.StripANSI(val))
+			if !isValidSecretValue(val) {
+				return
+			}
+			t := classifySecret(line)
 			m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(val, 200), Source: "mantra", File: file})
 			secretCount++
 			m.log.Secret(t, "mantra", util.Truncate(val, 80))
@@ -440,7 +516,7 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
 
 	secretCount := 0
 	extractFileAndValue := func(line string) (string, string) {
-		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(util.StripANSI(line))
 		file := ""
 		val := line
 		fields := strings.Fields(line)
@@ -458,18 +534,26 @@ func (m *Module) runJsecret(ctx context.Context, input string) {
 	}
 
 	tcfg := m.cfg.Tools["jsecret"]
-	timeout := time.Duration(tcfg.Timeout) * time.Second
+	timeout := 5 * time.Minute
+	if tcfg.Timeout > 0 {
+		timeout = time.Duration(tcfg.Timeout) * time.Second
+	}
 
 	r := runner.Run(ctx, "jsecret", nil,
 		runner.WithStdin(input),
 		runner.WithTimeout(timeout),
 		runner.WithStderrCallback(func(line string) { m.log.Debug("jsecret: %s", line) }),
 		runner.WithLineCallback(func(line string) {
+			line = util.StripANSI(line)
 			if !isSecretLine(line) {
 				return
 			}
-			t := classifySecret(line)
 			file, val := extractFileAndValue(line)
+			val = strings.TrimSpace(util.StripANSI(val))
+			if !isValidSecretValue(val) {
+				return
+			}
+			t := classifySecret(line)
 			m.store.AddSecret(&store.Secret{Type: t, Value: util.Truncate(val, 200), Source: "jsecret", File: file})
 			secretCount++
 			m.log.Secret(t, "jsecret", util.Truncate(val, 80))
@@ -620,6 +704,10 @@ func (m *Module) runGitleaks(ctx context.Context, jsDir string, urlMap map[strin
 		}
 		if err := json.Unmarshal(data, &findings); err == nil {
 			for _, f := range findings {
+				cleanSecret := strings.TrimSpace(util.StripANSI(f.Secret))
+				if !isValidSecretValue(cleanSecret) {
+					continue
+				}
 				secType := f.Description
 				if secType == "" {
 					secType = f.RuleID
@@ -633,12 +721,12 @@ func (m *Module) runGitleaks(ctx context.Context, jsDir string, urlMap map[strin
 				}
 				m.store.AddSecret(&store.Secret{
 					Type:   secType,
-					Value:  util.Truncate(f.Secret, 200),
+					Value:  util.Truncate(cleanSecret, 200),
 					Source: "gitleaks",
 					File:   origFile,
 				})
 				secretCount++
-				m.log.Secret(secType, "gitleaks", util.Truncate(f.Secret, 60))
+				m.log.Secret(secType, "gitleaks", util.Truncate(cleanSecret, 60))
 				m.log.Finding("high", "Secret ("+secType+")", origFile)
 			}
 		}
@@ -757,3 +845,95 @@ func isSecretLine(line string) bool {
 	}
 	return false
 }
+
+// isValidSecretValue filters out minified JS identifiers, dummy tokens, error
+// messages, and config keys that regularly cause false positives in mantra,
+// jsecret, and gitleaks.
+func isValidSecretValue(val string) bool {
+	val = strings.TrimSpace(util.StripANSI(val))
+	if val == "" {
+		return false
+	}
+	// Strip enclosing brackets and quotes
+	val = strings.Trim(val, "[](){}\"'` ")
+
+	// If it's an assignment/pair (e.g. "authToken = null" or "apiKey: e"), extract the right-hand side
+	for _, sep := range []string{"=>", "==", "=", ":"} {
+		if idx := strings.Index(val, sep); idx != -1 {
+			rhs := strings.TrimSpace(val[idx+len(sep):])
+			if rhs != "" {
+				val = strings.Trim(rhs, "[](){}\"'` ")
+				break
+			}
+		}
+	}
+
+	ll := strings.ToLower(val)
+
+	// 1. Minified variables or very short tokens (e.g. e, n, t, a, nB, null)
+	if len(val) < 6 {
+		return false
+	}
+
+	// 2. Reject common JavaScript primitives, keywords, and config placeholders
+	falsePrimitives := []string{
+		"null", "undefined", "true", "false", "void 0", "none", "nil",
+		"config", "options", "headers", "params", "props", "state", "response",
+		"request", "data", "default", "window", "document", "this", "self",
+		"function", "return", "typeof", "instanceof", "object", "string",
+		"dummy", "placeholder", "example", "test", "sample", "your-api-key",
+		"api_key_here", "secret_here", "token_here", "xxxx", "0000",
+		"rundoublec25k",
+	}
+	for _, p := range falsePrimitives {
+		if ll == p {
+			return false
+		}
+	}
+
+	// 3. Reject JS library error messages, throw statements, assertions
+	if strings.Contains(ll, "throw ") ||
+		strings.Contains(ll, "typeerror") ||
+		strings.Contains(ll, "new error") ||
+		strings.Contains(ll, "error(") ||
+		strings.Contains(ll, "console.") ||
+		strings.Contains(ll, "assert(") {
+		return false
+	}
+
+	// 4. Reject dummy repeated character secrets (e.g. AIDAAAAAAAAAAAAAAAAA)
+	if isDummyRepeatedSecret(val) {
+		return false
+	}
+
+	// 5. Reject JS object property accesses (e.g. this.token, config.apikey, process.env.KEY)
+	if strings.HasPrefix(ll, "this.") || strings.HasPrefix(ll, "config.") || strings.HasPrefix(ll, "options.") ||
+		strings.HasPrefix(ll, "req.") || strings.HasPrefix(ll, "res.") || strings.HasPrefix(ll, "process.env") {
+		return false
+	}
+
+	return true
+}
+
+func isDummyRepeatedSecret(s string) bool {
+	if len(s) < 8 {
+		return false
+	}
+	counts := make(map[rune]int)
+	for _, r := range s {
+		counts[r]++
+	}
+	for _, count := range counts {
+		if float64(count)/float64(len(s)) > 0.65 {
+			return true
+		}
+	}
+	sUpper := strings.ToUpper(s)
+	if strings.Contains(sUpper, "AKIAIOSFODNN7EXAMPLE") ||
+		strings.Contains(sUpper, "WJALRXUTNFEMIK7MDENG") ||
+		strings.Contains(sUpper, "EXAMPLE") {
+		return true
+	}
+	return false
+}
+

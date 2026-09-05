@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/reconx/reconx/pkg/util"
 )
 
 // Host represents a discovered live host
@@ -108,6 +110,7 @@ type Store struct {
 	JSFiles      map[string]bool
 	Findings     []*Finding
 	Secrets      []*Secret
+	SecretKeys   map[string]bool // deduplicated secret set (type:value:file)
 	DirResults   []*DirResult
 	WAFResults   []*WAFResult
 	CloudAssets  []*CloudAsset
@@ -126,6 +129,7 @@ func New(scanID string) *Store {
 		Hosts:      make(map[string]*Host),
 		URLs:       make(map[string]bool),
 		JSFiles:    make(map[string]bool),
+		SecretKeys: make(map[string]bool),
 		ScanID:     scanID,
 		StartTime:  time.Now(),
 	}
@@ -346,10 +350,24 @@ func (s *Store) AddFinding(f *Finding) {
 	s.Findings = append(s.Findings, f)
 }
 
-// AddSecret records a discovered secret
+// AddSecret records a discovered secret, deduplicating identical findings
 func (s *Store) AddSecret(sec *Secret) {
+	if sec == nil {
+		return
+	}
+	sec.Value = strings.TrimSpace(util.StripANSI(sec.Value))
+	sec.Type = strings.TrimSpace(util.StripANSI(sec.Type))
+	key := sec.Type + ":" + sec.Value + ":" + sec.File
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.SecretKeys == nil {
+		s.SecretKeys = make(map[string]bool)
+	}
+	if s.SecretKeys[key] {
+		return
+	}
+	s.SecretKeys[key] = true
 	s.Secrets = append(s.Secrets, sec)
 }
 

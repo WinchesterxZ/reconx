@@ -3,6 +3,7 @@ package util
 import (
         "bufio"
         "os"
+        "regexp"
         "sort"
         "strings"
 )
@@ -135,4 +136,14 @@ func Truncate(s string, max int) string {
                 return s
         }
         return s[:max] + "..."
+}
+
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// StripANSI removes ANSI escape sequences from a string
+func StripANSI(s string) string {
+        if !strings.Contains(s, "\x1b") {
+                return s
+        }
+        return ansiRegex.ReplaceAllString(s, "")
 }
