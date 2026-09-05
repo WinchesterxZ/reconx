@@ -355,24 +355,26 @@ func (m *Module) runAmass(ctx context.Context, domain string, board *logger.Prog
 		path = tcfg.Path
 	}
 	// Cap the deadline at 10 min (cfg default) — amass passive enum on big
-	// targets can otherwise run for hours. -timeout is in minutes.
+	// targets can otherwise run for hours: -timeout only limits the data
+	// collection window; amass's post-collection DNS resolution can run far
+	// longer, so the runner deadline is the hard stop.
 	timeout := 10 * time.Minute
 	if tcfg.Timeout > 0 {
 		timeout = time.Duration(tcfg.Timeout) * time.Second
-	}
-	amassMin := int(timeout / time.Minute)
-	if amassMin < 1 {
-		amassMin = 1
 	}
 
 	// amass v4 quirk: with -silent, results do NOT appear on stdout — they
 	// must be captured via -o <file>. Without -o, -silent silently discards
 	// everything (observed: 0 results vs 233 without the flag).
 	outFile := filepath.Join(m.outDir, "amass_raw.txt")
-	args := []string{
-		"enum", "-passive", "-d", domain,
-		"-timeout", fmt.Sprintf("%d", amassMin),
-		"-silent", "-o", outFile,
+	args := []string{"enum", "-passive", "-d", domain, "-silent", "-o", outFile}
+	// Under --no-timeout, omit -timeout entirely so amass runs to completion.
+	if timeout > 0 {
+		amassMin := int(timeout / time.Minute)
+		if amassMin < 1 {
+			amassMin = 1
+		}
+		args = append(args, "-timeout", fmt.Sprintf("%d", amassMin))
 	}
 
 	board.Heartbeat("amass")
