@@ -179,15 +179,10 @@ func main() {
                 cfg.ConfigPath = cfgPath
         }
 
-        // Target: -u is purely additive. It can be combined with -d to
-        // also probe a specific host (admin panel, etc.) in addition to
-        // the parent domain. The previous code added -u to the domain
-        // list AND disabled subdomain enum whenever -u was set —
+        // -u is purely additive: it can be combined with -d to also probe a
+        // specific host (admin panel, etc.) in addition to the parent domain.
+        // The previous code disabled subdomain enum whenever -u was set —
         // silently dropping -d.
-        // -u is purely additive. It can be combined with -d to also probe a
-        // specific host (admin panel, etc.) in addition to the parent
-        // domain. The previous code added -u to the domain list AND
-        // disabled subdomain enum whenever -u was set — silently dropping -d.
         if *targetURL != "" {
                 domains = append(domains, *targetURL)
         }
@@ -255,10 +250,6 @@ func main() {
         }
 
         // Phase toggles
-        // --single and -u both opt out of subdomain enum, but -u is
-        // only "single target" if it was the ONLY target given. If the
-        // user passed both -u and -d, the -d domains still get full
-        // subdomain enumeration; -u just adds an extra live-host probe.
         // -u is "single target" only if no -d flag was given. If both
         // -u and -d are present, the -d domains still get full subdomain
         // enumeration; -u just adds an extra live-host probe.

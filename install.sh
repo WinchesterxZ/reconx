@@ -503,7 +503,7 @@ else
 fi
 
 step "Downloading DNS resolvers"
-mkdir -p "$HOME/.config/reconx"
+mkdir -p "$HOME/.config/reconx" "$HOME/.config/puredns"
 if [ -s "$HOME/.config/reconx/resolvers.txt" ]; then
     success "Resolvers already present ($HOME/.config/reconx/resolvers.txt)"
 else
@@ -511,6 +511,12 @@ else
         -O "$HOME/.config/reconx/resolvers.txt" && \
         success "Resolvers → $HOME/.config/reconx/resolvers.txt" || \
         warn "Resolver download failed"
+fi
+# puredns looks for resolvers at ~/.config/puredns/resolvers.txt — without it
+# the bruteforce phase errors out. Mirror the reconx copy so puredns just works.
+if [ -s "$HOME/.config/reconx/resolvers.txt" ] && [ ! -s "$HOME/.config/puredns/resolvers.txt" ]; then
+    cp "$HOME/.config/reconx/resolvers.txt" "$HOME/.config/puredns/resolvers.txt" && \
+        success "Resolvers mirrored → $HOME/.config/puredns/resolvers.txt (puredns default)"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

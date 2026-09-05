@@ -189,10 +189,8 @@ func (m *Module) runPermute(ctx context.Context, domain string, board *logger.Pr
 
 	var wg sync.WaitGroup
 	for _, candidate := range candidates {
-		select {
-		case <-ctx.Done():
-			break
-		default:
+		if ctx.Err() != nil {
+			break // cancelled — stop generating lookups
 		}
 		candidate := candidate
 		wg.Add(1)

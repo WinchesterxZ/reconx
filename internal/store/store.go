@@ -500,16 +500,6 @@ func (s *Store) SaveJSON(outDir string) error {
 	return nil
 }
 
-// AddSubdomainsFromSourcePreserve is like AddSubdomainsFromSource but
-// preserves existing source attribution when the subdomain is already
-// known. (The previous code overwrote sources on re-add, which broke
-// resume when tools re-ran and overwrote the original source string.)
-//
-// Currently a no-op alias for backwards compatibility.
-func (s *Store) AddSubdomainsFromSourcePreserve(subs []string, source string) int {
-	return s.AddSubdomainsFromSource(subs, source)
-}
-
 // SaveRaw saves a plain text list to a file
 func SaveRaw(path string, lines []string) error {
 	if dir := filepath.Dir(path); dir != "" {

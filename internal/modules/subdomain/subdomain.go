@@ -3,10 +3,9 @@ package subdomain
 import (
         "context"
         "fmt"
-        "io"
         "net"
-        "net/http"
         "os"
+        "path/filepath"
         "regexp"
         "strings"
         "sync"
@@ -92,7 +91,6 @@ func (m *Module) Run(ctx context.Context) error {
 
         total := len(m.store.GetSubdomains())
         m.log.PhaseComplete("Subdomain Enumeration", total, time.Since(start))
-
         // ── massdns resolve (optional, runs if massdns binary is available) ────────
         // Much faster than puredns/dnsx for very large subdomain sets (10k+).
         // Results are merged back into store so later phases see everything.
@@ -113,120 +111,154 @@ func (m *Module) Run(ctx context.Context) error {
 }
 
 func (m *Module) enumerateDomain(ctx context.Context, domain string, board *logger.ProgressBoard) {
-        type toolDef struct {
-                name     string
-                binKey   string // binary name to check in PATH; "" = HTTP-only
-                tokenKey string // config.Tokens key required to enable; "" = no token needed
-                fn       func(context.Context, string, *logger.ProgressBoard) ([]string, []string)
-        }
+	type toolDef struct {
+		name     string
+		binKey   string // binary name to check in PATH; "" = HTTP-only
+		tokenKey string // config.Tokens key required to enable; "" = no token needed
+		active   bool   // true = DNS-heavy (brute/permute) — runs in wave 2
+		fn       func(context.Context, string, *logger.ProgressBoard) ([]string, []string)
+	}
 
-        // The set below is intentionally large — every source is tried in
-        // parallel and the store deduplicates results. The user's stated goal
-        // is "most domains ever", so we err on the side of including every
-        // passive source we know about.
-        tools := []toolDef{
-                // Binary-backed tools (require install.sh)
-                {"subfinder",    "subfinder",         "",                m.runSubfinder},
-                {"assetfinder",  "assetfinder",       "",                m.runAssetfinder},
-                {"findomain",    "findomain",         "",                m.runFindomain},
-                {"amass",        "amass",             "",                m.runAmass},
-                {"chaos",        "chaos",             "chaos",           m.runChaos},
-                {"github-subs",  "github-subdomains", "github",          m.runGithubSubs},
-                {"dnsx-brute",   "dnsx",              "",                m.runDnsxBrute},
-                {"puredns",      "puredns",           "",                m.runPuredns},
-                {"shuffledns",   "shuffledns",        "",                m.runShuffleDNS},
+	// The set below is intentionally large — every source is tried in
+	// parallel and the store deduplicates results. The user's stated goal
+	// is "most domains ever", so we err on the side of including every
+	// passive source we know about.
+	tools := []toolDef{
+		// Binary-backed tools (require install.sh)
+		{name: "subfinder",   binKey: "subfinder",         fn: m.runSubfinder},
+		{name: "assetfinder", binKey: "assetfinder",       fn: m.runAssetfinder},
+		{name: "findomain",   binKey: "findomain",         fn: m.runFindomain},
+		{name: "amass",       binKey: "amass",             fn: m.runAmass},
+		{name: "chaos",       binKey: "chaos", tokenKey: "chaos",       fn: m.runChaos},
+		{name: "github-subs", binKey: "github-subdomains", tokenKey: "github", fn: m.runGithubSubs},
+		{name: "puredns",     binKey: "puredns", active: true,          fn: m.runPuredns},
+		{name: "shuffledns",  binKey: "shuffledns", active: true,       fn: m.runShuffleDNS},
+		{name: "dnsx-brute",  binKey: "dnsx", active: true,             fn: m.runDnsxBrute},
 
-                // HTTP-only API sources (no binary needed)
-                {"crt.sh",          "", "", m.runCrtSh},
-                {"google-ct",       "", "", m.runGoogleCT},
-                {"certspotter",     "", "", m.runCertspotter},
-                {"hackertarget",    "", "", m.runHackerTarget},
-                {"anubis",          "", "", m.runAnubis},
-                {"rapiddns",        "", "", m.runRapidDNS},
-                {"alienvault-otx",  "", "", m.runOTXSubs},
-                {"urlscan",         "", "", m.runURLScan},
-                {"dnsdumpster",     "", "", m.runDNSDumpster},
-                {"virustotal",      "", "virustotal",     m.runVirusTotal},
-                {"shodan",          "", "shodan",         m.runShodan},
-                {"securitytrails",  "", "securitytrails", m.runSecurityTrails},
-                {"censys",          "", "censys",         m.runCensys},
+		// HTTP-only API sources (no binary needed)
+		{name: "crt.sh",          fn: m.runCrtSh},
+		{name: "certspotter",     fn: m.runCertspotter},
+		{name: "hackertarget",    fn: m.runHackerTarget},
+		{name: "anubis",          fn: m.runAnubis},
+		{name: "rapiddns",        fn: m.runRapidDNS},
+		{name: "subdomaincenter", fn: m.runSubdomainCenter},
+		{name: "alienvault-otx",  fn: m.runOTXSubs},
+		{name: "urlscan",         fn: m.runURLScan},
+		{name: "virustotal",      tokenKey: "virustotal",     fn: m.runVirusTotal},
+		{name: "shodan",          tokenKey: "shodan",         fn: m.runShodan},
+		{name: "securitytrails",  tokenKey: "securitytrails", fn: m.runSecurityTrails},
+		{name: "censys",          tokenKey: "censys",         fn: m.runCensys},
+	}
 
-                // Local permutation — generates candidate names (dev-, -stg,
-                // -prod, etc.) and resolves them via the system resolver.
-                // No external binary needed; runs in pure Go.
-                {"permute",         "", "", m.runPermute},
-        }
+	hasPuredns := runner.IsAvailable("puredns")
+	hasShuffledns := runner.IsAvailable("shuffledns")
 
-        hasPuredns := runner.IsAvailable("puredns")
-        hasShuffledns := runner.IsAvailable("shuffledns")
+	// ── WAVE 1: passive/API sources ─────────────────────────────────────────
+	// All HTTP/API-based tools run concurrently. This wave is light on DNS
+	// (API lookups only). Keeping the DNS brute-forcers OUT of this wave
+	// matters: puredns/massdns with thousands of resolvers + permute with
+	// thousands of system-resolver lookups previously ran at the same time
+	// and starved the passive tools of DNS/network — they'd return a
+	// fraction of their real results (observed: subfinder 5 vs 133 when run
+	// alone, chaos 0 vs 123).
+	runWave := func(defs []toolDef) {
+		var wg sync.WaitGroup
+		for _, t := range defs {
+			t := t
 
-        var wg sync.WaitGroup
-        for _, t := range tools {
-                t := t
+			// Avoid running 3 heavy bruteforcers against the same wordlist
+			// concurrently. puredns is massdns-backed and fastest; fallback
+			// to shuffledns, then dnsx-brute.
+			if t.name == "shuffledns" && hasPuredns {
+				board.Skip(t.name, "using puredns (fastest)")
+				continue
+			}
+			if t.name == "dnsx-brute" && (hasPuredns || hasShuffledns) {
+				board.Skip(t.name, "using puredns/shuffledns (faster)")
+				continue
+			}
 
-                // Avoid running 3 heavy bruteforcers against the same wordlist concurrently.
-                // puredns is massdns-backed and fastest; fallback to shuffledns, then dnsx-brute.
-                if t.name == "shuffledns" && hasPuredns {
-                        board.Skip(t.name, "using puredns (fastest)")
-                        continue
-                }
-                if t.name == "dnsx-brute" && (hasPuredns || hasShuffledns) {
-                        // puredns / shuffledns are massdns-backed and
-                        // faster than dnsx brute with the same wordlist.
-                        // Skipping avoids running 3 concurrent
-                        // bruteforcers against the same wordlist.
-                        board.Skip(t.name, "using puredns/shuffledns (faster)")
-                        continue
-                }
+			if t.tokenKey != "" && m.cfg.Tokens[t.tokenKey] == "" {
+				board.Skip(t.name, "no "+t.tokenKey+" token")
+				continue
+			}
+			if t.binKey != "" {
+				path := t.binKey
+				if tcfg, ok := m.cfg.Tools[t.binKey]; ok {
+					if !tcfg.Enabled {
+						board.Skip(t.name, "disabled")
+						continue
+					}
+					if tcfg.Path != "" {
+						path = tcfg.Path
+					}
+				}
+				if !runner.IsAvailable(path) {
+					board.Skip(t.name, "not found — run install.sh")
+					continue
+				}
+			}
 
-                if t.tokenKey != "" && m.cfg.Tokens[t.tokenKey] == "" {
-                        board.Skip(t.name, "no "+t.tokenKey+" token")
-                        continue
-                }
-                if t.binKey != "" {
-                        path := t.binKey
-                        if tcfg, ok := m.cfg.Tools[t.binKey]; ok {
-                                if !tcfg.Enabled {
-                                        board.Skip(t.name, "disabled")
-                                        continue
-                                }
-                                if tcfg.Path != "" {
-                                        path = tcfg.Path
-                                }
-                        }
-                        if !runner.IsAvailable(path) {
-                                board.Skip(t.name, "not found — run install.sh")
-                                continue
-                        }
-                }
+			board.Register(t.name, domain)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				results, _ := t.fn(ctx, domain, board)
+				clean    := cleanLines(results)
+				filtered := m.scope.FilterList(clean)
+				dropped  := len(clean) - len(filtered)
+				// Tag each subdomain with the source that found it
+				// so the HTML report can filter by source.
+				added := m.store.AddSubdomainsBulkWithSource(filtered, t.name)
+				m.log.Debug("%s [%s]: %d raw, %d clean, %d in-scope, %d new (store total: %d)",
+					t.name, domain, len(results), len(clean), len(filtered), added,
+					len(m.store.GetSubdomains()))
+				if dropped > 0 {
+					m.log.Debug("%s: %d results dropped as out-of-scope", t.name, dropped)
+				}
+			}()
+		}
+		wg.Wait()
+	}
 
-                board.Register(t.name, domain)
-                wg.Add(1)
-                go func() {
-                        defer wg.Done()
-                        results, _ := t.fn(ctx, domain, board)
-                        clean    := cleanLines(results)
-                        filtered := m.scope.FilterList(clean)
-                        // Tag each subdomain with the source that found it
-                        // so the HTML report can filter by source.
-                        added    := m.store.AddSubdomainsFromSource(filtered, t.name)
-                        m.log.Debug("%s completed for %s: %d raw, %d in-scope, %d added (store total: %d)",
-                                t.name, domain, len(results), len(filtered), added, len(m.store.GetSubdomains()))
-                }()
-        }
-        wg.Wait()
+	passive := make([]toolDef, 0, len(tools))
+	active := make([]toolDef, 0, 4)
+	for _, t := range tools {
+		if t.active {
+			active = append(active, t)
+		} else {
+			passive = append(passive, t)
+		}
+	}
+	runWave(passive)
+
+	// ── WAVE 2: permutation + DNS brute-force ───────────────────────────────
+	// permute runs here (not in wave 1) for two reasons:
+	//   1. It floods the system resolver with lookups — isolating it keeps
+	//      the passive tools' API queries healthy.
+	//   2. It permutes the prefixes found in wave 1, which finds far more
+	//      real hosts than permuting the empty set at t=0.
+	active = append(active, toolDef{name: "permute", fn: m.runPermute})
+	runWave(active)
 }
 
 // ── Tool runners ─────────────────────────────────────────────────────────────
 
 func (m *Module) runSubfinder(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
 	tcfg := m.cfg.Tools["subfinder"]
-	// -nc disables ANSI escape codes in subfinder output
-	args := append([]string{"-d", domain, "-silent", "-nc"}, tcfg.Flags...)
+	path := "subfinder"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
+	// -all enables every subfinder source (including keyed ones from
+	// subfinder's own provider config). Without it subfinder only queries
+	// its default subset — a common cause of "subfinder alone found more".
+	// -nc disables ANSI escape codes in subfinder output.
+	args := append([]string{"-d", domain, "-all", "-silent", "-nc"}, tcfg.Flags...)
 
 	var count int
 	var mu sync.Mutex
-	r := runner.Run(ctx, tcfg.Path, args,
+	r := runner.Run(ctx, path, args,
 		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
 		runner.WithLineCallback(func(line string) {
 			mu.Lock()
@@ -281,48 +313,79 @@ func (m *Module) runFindomain(ctx context.Context, domain string, board *logger.
 
 func (m *Module) runAmass(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
 	tcfg := m.cfg.Tools["amass"]
-	timeout := 3 * time.Minute
-	if tcfg.Timeout > 0 && tcfg.Timeout < 180 {
+	path := "amass"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
+	// Cap the deadline at 10 min (cfg default) — amass passive enum on big
+	// targets can otherwise run for hours. -timeout is in minutes.
+	timeout := 10 * time.Minute
+	if tcfg.Timeout > 0 {
 		timeout = time.Duration(tcfg.Timeout) * time.Second
 	}
-	// amass -timeout 3 ensures amass stops itself after 3 minutes
-	var count int
-	var mu sync.Mutex
-	r := runner.Run(ctx, tcfg.Path,
-		[]string{"enum", "-passive", "-d", domain, "-timeout", "3", "-silent"},
+	amassMin := int(timeout / time.Minute)
+	if amassMin < 1 {
+		amassMin = 1
+	}
+
+	// amass v4 quirk: with -silent, results do NOT appear on stdout — they
+	// must be captured via -o <file>. Without -o, -silent silently discards
+	// everything (observed: 0 results vs 233 without the flag).
+	outFile := filepath.Join(m.outDir, "amass_raw.txt")
+	args := []string{
+		"enum", "-passive", "-d", domain,
+		"-timeout", fmt.Sprintf("%d", amassMin),
+		"-silent", "-o", outFile,
+	}
+
+	board.Heartbeat("amass")
+	r := runner.Run(ctx, path, args,
 		runner.WithTimeout(timeout),
-		runner.WithLineCallback(func(line string) {
-			mu.Lock()
-			count++
-			c := count
-			mu.Unlock()
-			board.Update("amass", c)
-		}),
 		runner.WithStderrCallback(func(line string) { board.Heartbeat("amass") }))
 
-	if r.IsTimeout() {
-		board.Timeout("amass", len(r.Lines))
-	} else if r.ExitCode == 1 || r.ExitCode == 2 {
-		if len(r.Lines) > 0 {
-			board.Done("amass", len(r.Lines))
-		} else {
-			board.Fail("amass", fmt.Sprintf("exit %d", r.ExitCode))
+	var lines []string
+	if data, err := os.ReadFile(outFile); err == nil {
+		for _, l := range strings.Split(string(data), "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				lines = append(lines, l)
+			}
 		}
-	} else if r.Err != nil {
+	}
+	// amass -o writes graph lines like:
+	//   sub.domain.com (FQDN) --> cname_record --> target (FQDN)
+	// Extract both sides so CNAME targets on the target domain are kept too.
+	var results []string
+	for _, l := range lines {
+		for _, side := range strings.Split(l, " --> ") {
+			side = strings.TrimSpace(side)
+			if idx := strings.Index(side, " ("); idx > 0 {
+				side = side[:idx]
+			}
+			results = append(results, side)
+		}
+	}
+
+	if r.IsTimeout() {
+		board.Timeout("amass", len(results))
+	} else if r.Err != nil && len(results) == 0 {
 		board.Fail("amass", r.DiagString())
 	} else {
-		board.Done("amass", len(r.Lines))
+		board.Done("amass", len(results))
 	}
-	return r.Lines, r.Stderr
+	return results, r.Stderr
 }
 
 func (m *Module) runChaos(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
 	tcfg := m.cfg.Tools["chaos"]
 	token := m.cfg.Tokens["chaos"]
+	path := "chaos"
+	if tcfg.Path != "" {
+		path = tcfg.Path
+	}
 
 	var count int
 	var mu sync.Mutex
-	r := runner.Run(ctx, tcfg.Path, []string{"-d", domain, "-silent"},
+	r := runner.Run(ctx, path, []string{"-d", domain, "-silent"},
 		runner.WithEnv([]string{"PDCP_API_KEY=" + token}),
 		runner.WithTimeout(time.Duration(tcfg.Timeout)*time.Second),
 		runner.WithLineCallback(func(line string) {
@@ -338,132 +401,67 @@ func (m *Module) runChaos(ctx context.Context, domain string, board *logger.Prog
 }
 
 func (m *Module) runGithubSubs(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        token := m.cfg.Tokens["github"]
-        path := "github-subdomains"
-        // github-subdomains is not in cfg.Tools by default, but allow override.
-        if tcfg, ok := m.cfg.Tools["github-subdomains"]; ok {
-                if tcfg.Path != "" {
-                        path = tcfg.Path
-                }
-        }
+	token := m.cfg.Tokens["github"]
+	path := "github-subdomains"
+	timeout := 3 * time.Minute
+	// github-subdomains is not in cfg.Tools by default, but allow override.
+	if tcfg, ok := m.cfg.Tools["github-subdomains"]; ok {
+		if tcfg.Path != "" {
+			path = tcfg.Path
+		}
+		if tcfg.Timeout > 0 {
+			timeout = time.Duration(tcfg.Timeout) * time.Second
+		}
+	}
 
-        r := runner.Run(ctx, path,
-                []string{"-d", domain, "-t", token, "-q"},
-                runner.WithTimeout(3*time.Minute))
+	// github-subdomains prefixes every stdout line with "[HH:MM:SS] " even
+	// in quiet mode — e.g. "[02:01:17] cargo.indrive.com". Without stripping
+	// the timestamp, cleanLines rejects every line (contains a space) and
+	// the source yields 0 results despite finding 700+.
+	// Results also go to -o <file> clean; we use that as the source of truth
+	// and keep stdout only for the live board counter.
+	outFile := filepath.Join(m.outDir, "github_subs_raw.txt")
 
-        finalize(board, "github-subs", r)
-        return r.Lines, r.Stderr
+	var count int
+	var mu sync.Mutex
+	r := runner.Run(ctx, path,
+		[]string{"-d", domain, "-t", token, "-q", "-o", outFile},
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) {
+			clean := ghTsPrefix.ReplaceAllString(line, "")
+			if !isValidDomain(strings.ToLower(clean)) {
+				return // banner/log lines only
+			}
+			mu.Lock()
+			count++
+			board.Update("github-subs", count)
+			mu.Unlock()
+		}))
+
+	var results []string
+	if data, err := os.ReadFile(outFile); err == nil {
+		for _, l := range strings.Split(string(data), "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				results = append(results, l)
+			}
+		}
+	}
+	if len(results) == 0 {
+		// Older tool versions without -o support: strip timestamps manually.
+		for _, l := range r.Lines {
+			if clean := ghTsPrefix.ReplaceAllString(l, ""); isValidDomain(strings.ToLower(clean)) {
+				results = append(results, clean)
+			}
+		}
+	}
+
+	finalize(board, "github-subs", r)
+	return results, r.Stderr
 }
 
-func (m *Module) runCrtSh(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        // crt.sh returns 502 / 504 frequently when busy. Retry up to 3 times
-        // with a short backoff before giving up. The old code gave up on the
-        // first error and logged a misleading "fail" for one of the best
-        // free CT sources.
-        apiURL := fmt.Sprintf("https://crt.sh/?q=%%25.%s&output=json", domain)
-
-        var (
-                body    []byte
-                status  int
-                err     error
-                attempt int
-        )
-        for attempt = 0; attempt < 3; attempt++ {
-                body, status, err = httpGetBody(ctx, apiURL, "crt.sh", m.log)
-                if err == nil && status == 200 {
-                        break
-                }
-                m.log.Debug("crt.sh: attempt %d failed (status=%d err=%v) — retrying", attempt+1, status, err)
-                select {
-                case <-ctx.Done():
-                        board.Fail("crt.sh", "cancelled")
-                        return nil, nil
-                case <-time.After(time.Duration(attempt+1) * 3 * time.Second):
-                }
-        }
-        if err != nil || status != 200 {
-                board.Fail("crt.sh", fmt.Sprintf("HTTP %d after %d attempts", status, attempt))
-                return nil, nil
-        }
-
-        seen := make(map[string]bool)
-        var results []string
-        for _, part := range strings.Split(string(body), `"name_value":"`) {
-                if idx := strings.Index(part, `"`); idx > 0 {
-                        for _, sub := range strings.Split(part[:idx], `\n`) {
-                                sub = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(sub), "*."))
-                                if strings.HasSuffix(sub, "."+domain) || sub == domain {
-                                        if isValidDomain(sub) && !seen[sub] {
-                                                seen[sub] = true
-                                                results = append(results, sub)
-                                        }
-                                }
-                        }
-                }
-        }
-        board.Done("crt.sh", len(results))
-        return results, nil
-}
-
-func (m *Module) runCertspotter(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        url   := fmt.Sprintf("https://api.certspotter.com/v1/issuances?domain=%s&include_subdomains=true&expand=dns_names", domain)
-
-        reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-        defer cancel()
-        req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil)
-        req.Header.Set("User-Agent", "Mozilla/5.0 (reconx)")
-
-        resp, err := http.DefaultClient.Do(req)
-        if err != nil { board.Fail("certspotter", err.Error()); return nil, nil }
-        defer resp.Body.Close()
-
-        body, _ := io.ReadAll(io.LimitReader(resp.Body, 5*1024*1024))
-        seen := make(map[string]bool)
-        var results []string
-        for _, part := range strings.Split(string(body), `"`) {
-                sub := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(part), "*."))
-                if (strings.HasSuffix(sub, "."+domain) || sub == domain) && !seen[sub] && isValidDomain(sub) {
-                        seen[sub] = true
-                        results = append(results, sub)
-                }
-        }
-        board.Done("certspotter", len(results))
-        return results, nil
-}
-
-func (m *Module) runHackerTarget(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        url   := fmt.Sprintf("https://api.hackertarget.com/hostsearch/?q=%s", domain)
-
-        reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-        defer cancel()
-        req, _ := http.NewRequestWithContext(reqCtx, "GET", url, nil)
-        req.Header.Set("User-Agent", "Mozilla/5.0 (reconx)")
-
-        resp, err := http.DefaultClient.Do(req)
-        if err != nil { board.Fail("hackertarget", err.Error()); return nil, nil }
-        defer resp.Body.Close()
-
-        body, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
-        bodyStr  := string(body)
-        if strings.Contains(bodyStr, "API count exceeded") {
-                board.Fail("hackertarget", "rate limited")
-                return nil, nil
-        }
-
-        seen := make(map[string]bool)
-        var results []string
-        for _, line := range strings.Split(bodyStr, "\n") {
-                if parts := strings.SplitN(line, ",", 2); len(parts) == 2 {
-                        sub := strings.ToLower(strings.TrimSpace(parts[0]))
-                        if strings.Contains(sub, domain) && !seen[sub] && isValidDomain(sub) {
-                                seen[sub] = true
-                                results = append(results, sub)
-                        }
-                }
-        }
-        board.Done("hackertarget", len(results))
-        return results, nil
-}
+// ghTsPrefix matches the "[HH:MM:SS] " prefix github-subdomains puts on
+// every stdout line, even in quiet mode.
+var ghTsPrefix = regexp.MustCompile(`^\[\d{2}:\d{2}:\d{2}\]\s*`)
 
 func (m *Module) runDnsxBrute(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
         wordlist := findWordlist(m.cfg)
@@ -495,7 +493,7 @@ func (m *Module) runDnsxBrute(ctx context.Context, domain string, board *logger.
 }
 
 func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        wordlist  := findWordlist(m.cfg)
+        wordlist := findWordlist(m.cfg)
         if wordlist == "" {
                 board.Skip("puredns", "no wordlist found")
                 return nil, nil
@@ -505,7 +503,7 @@ func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.Pr
         if tcfg, ok := m.cfg.Tools["puredns"]; ok && tcfg.Path != "" {
                 path = tcfg.Path
         }
-        args      := []string{"bruteforce", wordlist, domain}
+        args := []string{"bruteforce", wordlist, domain}
         if resolvers != "" {
                 args = append(args, "-r", resolvers)
         }
@@ -513,10 +511,31 @@ func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.Pr
         if tcfg, ok := m.cfg.Tools["puredns"]; ok && tcfg.Timeout > 0 {
                 timeout = time.Duration(tcfg.Timeout) * time.Second
         }
+
+        // Results go to stdout only when NOT using --silent-style quiet flags;
+        // puredns writes plain hostnames to stdout and progress bars to
+        // stderr, but only when stdout is a pipe does it stay clean. Capture
+        // to a file as source of truth to avoid ANSI contamination.
+        outFile := filepath.Join(m.outDir, "puredns_raw.txt")
+        args = append(args, "--write", outFile)
+
         r := runner.Run(ctx, path, args,
                 runner.WithTimeout(timeout),
                 runner.WithLineCallback(func(line string) { board.Heartbeat("puredns") }),
                 runner.WithStderrCallback(func(line string) { board.Heartbeat("puredns") }))
+
+        var results []string
+        if data, err := os.ReadFile(outFile); err == nil {
+                for _, l := range strings.Split(string(data), "\n") {
+                        if l = strings.TrimSpace(l); l != "" {
+                                results = append(results, l)
+                        }
+                }
+        }
+        if len(results) > 0 {
+                board.Done("puredns", len(results))
+                return results, r.Stderr
+        }
         finalize(board, "puredns", r)
         return r.Lines, r.Stderr
 }
@@ -791,7 +810,7 @@ func (m *Module) runMassdns(ctx context.Context, domains []string) {
         }
         r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
         if r.Err != nil && len(r.Lines) == 0 {
-                m.log.ToolError("massdns", fmt.Errorf(r.DiagString()), r.Stderr)
+                m.log.ToolError("massdns", fmt.Errorf("%s", r.DiagString()), r.Stderr)
                 return
         }
 

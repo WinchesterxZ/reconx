@@ -30,11 +30,6 @@ import (
         "github.com/reconx/reconx/pkg/runner"
 )
 
-// netSplitHostPort wraps net.SplitHostPort so we can stub it in tests.
-func netSplitHostPort(s string) (string, string, error) {
-        return net.SplitHostPort(s)
-}
-
 // guessPortService returns a friendly service name for common ports.
 // Used when restoring ports from ports.txt during resume.
 func guessPortService(port int) string {
@@ -354,7 +349,7 @@ func stripURLToHost(s string) string {
                 s = s[:idx]
         }
         // Strip :port
-        if h, _, err := netSplitHostPort(s); err == nil {
+        if h, _, err := net.SplitHostPort(s); err == nil {
                 s = h
         }
         return strings.ToLower(strings.TrimSpace(s))
@@ -546,11 +541,6 @@ func (p *Pipeline) Run(ctx context.Context) error {
 
         p.printSummary(time.Since(start))
         return nil
-}
-
-func fileExists(path string) bool {
-        _, err := os.Stat(path)
-        return err == nil
 }
 
 // fileHasContent returns true if path exists and is non-empty.
