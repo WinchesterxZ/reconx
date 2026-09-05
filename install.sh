@@ -601,6 +601,36 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STEP 10c — gowitness + Chromium deps (screenshots phase)
+# ─────────────────────────────────────────────────────────────────────────────
+# Without gowitness the --screenshots phase silently skips on every run.
+# gowitness v3 also needs a working Chromium/Chrome — on a bare VPS only the
+# install itself succeeds while every capture fails, so deps matter.
+step "Installing gowitness (screenshots) + Chromium dependencies"
+
+install_go_tool "github.com/sensepost/gowitness@latest" "gowitness"
+
+if ! command -v gowitness &>/dev/null && [ ! -x "$GOPATH/bin/gowitness" ]; then
+    warn "gowitness install failed — screenshots phase will be skipped"
+else
+    # Chromium: needed by gowitness's headless browser
+    if command -v chromium-browser &>/dev/null || command -v chromium &>/dev/null || command -v google-chrome &>/dev/null; then
+        success "Chromium already present"
+    elif sudo -n true 2>/dev/null; then
+        info "Installing Chromium (required for screenshots)..."
+        if sudo apt-get install -y chromium-browser --quiet &>/dev/null 2>&1 || \
+           sudo apt-get install -y chromium --quiet &>/dev/null 2>&1; then
+            success "Chromium installed"
+        else
+            warn "Chromium install failed — screenshots may fail. Try: sudo apt install chromium-browser"
+        fi
+    else
+        warn "No Chromium found and no sudo — screenshots will likely fail"
+    fi
+fi
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # STEP 11 — Build and install reconx binary
 # ─────────────────────────────────────────────────────────────────────────────
 step "Building ReconX"

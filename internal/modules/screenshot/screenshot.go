@@ -92,16 +92,30 @@ func (m *Module) Run(ctx context.Context) error {
 	board := m.log.NewProgressBoard()
 	board.Register("gowitness", fmt.Sprintf("%d hosts", len(hosts)))
 
+	// Budget: ~10s per host at 5 threads, with a floor of 15 min and a cap
+	// of 60 min for very large host lists. The previous fixed 15 min cap
+	// truncated screenshots on 150+ host scans.
+	budget := time.Duration(len(hosts)*10/5+60) * time.Second
+	if budget < 15*time.Minute {
+		budget = 15 * time.Minute
+	}
+	if budget > 60*time.Minute {
+		budget = 60 * time.Minute
+	}
+	if m.cfg.NoTimeout || runner.IsNoTimeout() {
+		budget = 0
+	}
+
 	r := runner.Run(ctx, tool, args,
-runner.WithTimeout(15*time.Minute),
-runner.WithLineCallback(func(line string) {
-board.Heartbeat("gowitness")
-}),
-runner.WithStderrCallback(func(line string) {
-m.log.DebugBoard(board, "gowitness: %s", line)
-board.Heartbeat("gowitness")
-}),
-)
+		runner.WithTimeout(budget),
+		runner.WithLineCallback(func(line string) {
+			board.Heartbeat("gowitness")
+		}),
+		runner.WithStderrCallback(func(line string) {
+			m.log.DebugBoard(board, "gowitness: %s", line)
+			board.Heartbeat("gowitness")
+		}),
+	)
 
 	// Organize screenshots into per-domain folders
 	// gowitness names files like: http-api.example.com-443.png
@@ -111,7 +125,7 @@ board.Heartbeat("gowitness")
 	board.Stop()
 
 	if r.IsTimeout() {
-		m.log.ToolTimeout("gowitness", organized, 15*time.Minute)
+		m.log.ToolTimeout("gowitness", organized, budget)
 	} else if r.Err != nil && organized == 0 {
 		m.log.ToolError("gowitness", fmt.Errorf(r.DiagString()), r.Stderr)
 	} else {
