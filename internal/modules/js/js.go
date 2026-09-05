@@ -883,7 +883,7 @@ func isValidSecretValue(val string) bool {
 		"function", "return", "typeof", "instanceof", "object", "string",
 		"dummy", "placeholder", "example", "test", "sample", "your-api-key",
 		"api_key_here", "secret_here", "token_here", "xxxx", "0000",
-		"rundoublec25k",
+		"rundoublec25k", "production", "development", "staging", "localhost", "127.0.0.1", "0.0.0.0",
 	}
 	for _, p := range falsePrimitives {
 		if ll == p {
