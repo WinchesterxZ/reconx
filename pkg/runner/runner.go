@@ -80,11 +80,12 @@ func IsNoTimeout() bool {
 type Option func(*runConfig)
 
 type runConfig struct {
-	timeout      time.Duration
-	stdin        string
-	onLine       func(string) // called for each stdout line
-	onStderrLine func(string) // called for each stderr line
-	env          []string
+	timeout       time.Duration
+	hardTimeout   time.Duration // always enforced, even if IsNoTimeout() is true
+	stdin         string
+	onLine        func(string) // called for each stdout line
+	onStderrLine  func(string) // called for each stderr line
+	env           []string
 	captureStderr bool
 	filterStderr  bool // if true, don't add stderr to Lines
 }
@@ -92,6 +93,13 @@ type runConfig struct {
 // WithTimeout sets execution timeout
 func WithTimeout(d time.Duration) Option {
 	return func(c *runConfig) { c.timeout = d }
+}
+
+// WithHardTimeout sets an absolute deadline that is ALWAYS enforced, even when
+// global timeouts are disabled via SetNoTimeout / --no-timeout. This prevents
+// network tools from hanging indefinitely in deadlocked sockets or infinite scans.
+func WithHardTimeout(d time.Duration) Option {
+	return func(c *runConfig) { c.hardTimeout = d }
 }
 
 // WithStdin pipes a string to the tool's stdin
@@ -130,10 +138,17 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 		o(cfg)
 	}
 
+	effectiveTimeout := cfg.timeout
+	if IsNoTimeout() {
+		effectiveTimeout = cfg.hardTimeout
+	} else if cfg.hardTimeout > 0 && (effectiveTimeout == 0 || cfg.hardTimeout < effectiveTimeout) {
+		effectiveTimeout = cfg.hardTimeout
+	}
+
 	var runCtx context.Context
 	var cancel context.CancelFunc
-	if cfg.timeout > 0 && !IsNoTimeout() {
-		runCtx, cancel = context.WithTimeout(ctx, cfg.timeout)
+	if effectiveTimeout > 0 {
+		runCtx, cancel = context.WithTimeout(ctx, effectiveTimeout)
 	} else {
 		runCtx, cancel = context.WithCancel(ctx)
 	}
@@ -150,10 +165,13 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 		cmd.Env = append(cmd.Environ(), cfg.env...)
 	}
 
-        // Stdin
-        if cfg.stdin != "" {
-                cmd.Stdin = strings.NewReader(cfg.stdin)
-        }
+	// Stdin: If stdin is provided, pipe it. Otherwise explicitly provide an empty reader
+	// so child tools (nuclei, feroxbuster, ffuf, etc.) never block reading standard input.
+	if cfg.stdin != "" {
+		cmd.Stdin = strings.NewReader(cfg.stdin)
+	} else {
+		cmd.Stdin = strings.NewReader("")
+	}
 
         // Pipes
         stdoutPipe, err := cmd.StdoutPipe()
@@ -259,7 +277,7 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 
         // Classify timeout
         if runCtx.Err() == context.DeadlineExceeded {
-                runErr = fmt.Errorf("timeout after %s", cfg.timeout.Round(time.Second))
+                runErr = fmt.Errorf("timeout after %s", effectiveTimeout.Round(time.Second))
         }
 
         return &Result{

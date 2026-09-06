@@ -207,3 +207,40 @@ func TestCheckTools(t *testing.T) {
 	if !avail["sh"]    { t.Error("sh should be available") }
 	if avail["fake_tool_xyz_reconx"] { t.Error("fake tool should not be available") }
 }
+
+func TestRun_HardTimeoutEnforcedEvenWithNoTimeout(t *testing.T) {
+	SetNoTimeout(true)
+	defer SetNoTimeout(false)
+
+	start := time.Now()
+	// sleep for 30s, but hardTimeout is 150ms. Must be killed in ~150ms!
+	r := Run(context.Background(), "sleep", []string{"30"},
+		WithTimeout(10*time.Second),
+		WithHardTimeout(150*time.Millisecond))
+	elapsed := time.Since(start)
+
+	if elapsed > 1*time.Second {
+		t.Errorf("hard timeout didn't enforce deadline when NoTimeout=true: took %s", elapsed)
+	}
+	if r.Err == nil || !r.IsTimeout() {
+		t.Errorf("expected IsTimeout()=true, err=%v", r.Err)
+	}
+}
+
+func TestRun_DefaultEmptyStdinDoesNotBlock(t *testing.T) {
+	// 'cat' without stdin would block forever on terminal stdin if not piped.
+	// With empty reader default, cat exits immediately with 0 lines and exit code 0.
+	start := time.Now()
+	r := Run(context.Background(), "cat", nil, WithTimeout(2*time.Second))
+	elapsed := time.Since(start)
+
+	if elapsed > 1*time.Second {
+		t.Errorf("cat took too long, likely blocked on stdin: took %s", elapsed)
+	}
+	if r.Err != nil {
+		t.Errorf("unexpected error: %v", r.Err)
+	}
+	if len(r.Lines) != 0 {
+		t.Errorf("expected 0 lines from empty stdin, got %v", r.Lines)
+	}
+}

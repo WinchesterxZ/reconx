@@ -73,18 +73,19 @@ func (m *Module) Run(ctx context.Context) error {
 	m.log.Info("nuclei targets — non-WAF: %d URLs (fast) | WAF-protected: %d URLs (stealth)",
 		len(nowafURLs), len(wafURLs))
 
-	// Template categories ordered by speed (fast first) — tech-detect is
-	// handled in the alive phase by httpx and does NOT belong in vuln scanning.
+	// Template categories ordered by speed and impact (fastest & highest-yield first).
+	// Running fast, high-confidence categories first (takeovers, misconfigs, exposures, default-logins)
+	// ensures immediate findings without being blocked behind 4,000+ CVE templates.
 	categories := []struct {
 		name     string
 		template string
-		timeout  int // per-category timeout in seconds
+		timeout  int // base per-category timeout in seconds
 	}{
-		{"cves", "http/cves", 300},
-		{"misconfigs", "http/misconfiguration", 240},
 		{"takeovers", "http/takeovers", 180},
+		{"misconfigs", "http/misconfiguration", 240},
 		{"exposures", "http/exposures", 300},
 		{"default-logins", "http/default-logins", 240},
+		{"cves", "http/cves", 420},
 	}
 
 	totalFindings := 0
@@ -99,8 +100,8 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 
 	groups := []targetGroup{
-		{label: "non-waf", targetFile: targetFileNoWAF, count: len(nowafURLs), rateLimit: "150", retries: "2", timeoutSec: "7"},
-		{label: "waf", targetFile: targetFileWAF, count: len(wafURLs), rateLimit: "30", retries: "1", timeoutSec: "7"},
+		{label: "non-waf", targetFile: targetFileNoWAF, count: len(nowafURLs), rateLimit: "150", retries: "2", timeoutSec: "5"},
+		{label: "waf", targetFile: targetFileWAF, count: len(wafURLs), rateLimit: "60", retries: "1", timeoutSec: "5"},
 	}
 
 	for _, g := range groups {
@@ -118,6 +119,10 @@ func (m *Module) Run(ctx context.Context) error {
 			"-timeout", g.timeoutSec,
 			"-rate-limit", g.rateLimit,
 			"-max-host-error", "30",
+			"-c", "50",
+			"-bulk-size", "25",
+			"-stats",
+			"-si", "30",
 		}
 
 		if m.cfg.BugBountyHeader != "" {
@@ -126,12 +131,14 @@ func (m *Module) Run(ctx context.Context) error {
 		baseArgs = append(baseArgs, tcfg.Flags...)
 
 		// Per-category timeouts scale with target count: factor +1 step per 50 targets,
-		// capped at 25 min per category (or 35 min under --no-timeout to avoid hanging indefinitely).
+		// capped at 15 min for quick categories and 25 min for CVEs.
+		// A hard timeout is strictly enforced even when global --no-timeout is active.
 		scale := (g.count + 49) / 50 // ceil(count/50)
 		if scale < 1 {
 			scale = 1
 		}
-		const maxCatTimeout = 25 * time.Minute
+		const maxCatTimeout = 15 * time.Minute
+		const maxCveTimeout = 25 * time.Minute
 
 		for _, cat := range categories {
 			select {
@@ -139,6 +146,19 @@ func (m *Module) Run(ctx context.Context) error {
 				m.log.Warn("nuclei: context cancelled — stopping at category %s (%s)", cat.name, g.label)
 				return ctx.Err()
 			default:
+			}
+
+			catCap := maxCatTimeout
+			if cat.name == "cves" {
+				catCap = maxCveTimeout
+			}
+
+			catTimeout := time.Duration(cat.timeout*scale) * time.Second
+			if catTimeout > catCap {
+				catTimeout = catCap
+			}
+			if (m.cfg.NoTimeout || runner.IsNoTimeout()) && catTimeout < 25*time.Minute {
+				catTimeout = 25 * time.Minute
 			}
 
 			args := append(append([]string{}, baseArgs...), "-t", cat.template)
@@ -150,18 +170,16 @@ func (m *Module) Run(ctx context.Context) error {
 			catFindings := 0
 			parseErrors := 0
 
-			catTimeout := time.Duration(cat.timeout*scale) * time.Second
-			if catTimeout > maxCatTimeout {
-				catTimeout = maxCatTimeout
-			}
-			if m.cfg.NoTimeout || runner.IsNoTimeout() {
-				catTimeout = 35 * time.Minute
-			}
-
 			r := runner.Run(ctx, nucleiPath, args,
 				runner.WithTimeout(catTimeout),
+				runner.WithHardTimeout(catTimeout),
 				runner.WithStderrCallback(func(line string) {
-					m.log.Debug("nuclei[%s/%s]: %s", g.label, cat.name, util.Truncate(line, 120))
+					line = strings.TrimSpace(util.StripANSI(line))
+					if strings.Contains(line, "Templates:") || strings.Contains(line, "RPS:") || strings.Contains(line, "%") {
+						m.log.Info("nuclei[%s/%s]: %s", g.label, cat.name, line)
+					} else {
+						m.log.Debug("nuclei[%s/%s]: %s", g.label, cat.name, util.Truncate(line, 120))
+					}
 				}),
 				runner.WithLineCallback(func(line string) {
 					line = strings.TrimSpace(line)
