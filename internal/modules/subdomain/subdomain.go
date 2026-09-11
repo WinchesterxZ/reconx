@@ -532,51 +532,58 @@ func (m *Module) runDnsxBrute(ctx context.Context, domain string, board *logger.
 }
 
 func (m *Module) runPuredns(ctx context.Context, domain string, board *logger.ProgressBoard) ([]string, []string) {
-        wordlist := findWordlist(m.cfg)
-        if wordlist == "" {
-                board.Skip("puredns", "no wordlist found")
-                return nil, nil
-        }
-        resolvers := findResolvers(m.cfg)
-        path      := "puredns"
-        if tcfg, ok := m.cfg.Tools["puredns"]; ok && tcfg.Path != "" {
-                path = tcfg.Path
-        }
-        args := []string{"bruteforce", wordlist, domain}
-        if resolvers != "" {
-                args = append(args, "-r", resolvers)
-        }
-        timeout := 15 * time.Minute
-        if tcfg, ok := m.cfg.Tools["puredns"]; ok && tcfg.Timeout > 0 {
-                timeout = time.Duration(tcfg.Timeout) * time.Second
-        }
+	wordlist := findWordlist(m.cfg)
+	if wordlist == "" {
+		board.Skip("puredns", "no wordlist found")
+		return nil, nil
+	}
+	resolvers := findResolvers(m.cfg)
+	path := "puredns"
+	if tcfg, ok := m.cfg.Tools["puredns"]; ok && tcfg.Path != "" {
+		path = tcfg.Path
+	}
+	timeout := 15 * time.Minute
+	if tcfg, ok := m.cfg.Tools["puredns"]; ok && tcfg.Timeout > 0 {
+		timeout = time.Duration(tcfg.Timeout) * time.Second
+	}
 
-        // Results go to stdout only when NOT using --silent-style quiet flags;
-        // puredns writes plain hostnames to stdout and progress bars to
-        // stderr, but only when stdout is a pipe does it stay clean. Capture
-        // to a file as source of truth to avoid ANSI contamination.
-        outFile := filepath.Join(m.outDir, "puredns_raw.txt")
-        args = append(args, "--write", outFile)
+	// puredns bruteforce domain [flags] reads wordlist from stdin.
+	// Passing wordlist as an argument causes puredns to treat the wordlist path
+	// as the target domain and read 0 bytes from stdin, producing 0 results.
+	outFile := filepath.Join(m.outDir, "puredns_raw.txt")
+	args := []string{"bruteforce", domain, "-w", outFile}
+	if resolvers != "" {
+		args = append(args, "-r", resolvers)
+	}
 
-        r := runner.Run(ctx, path, args,
-                runner.WithTimeout(timeout),
-                runner.WithLineCallback(func(line string) { board.Heartbeat("puredns") }),
-                runner.WithStderrCallback(func(line string) { board.Heartbeat("puredns") }))
+	r := runner.Run(ctx, path, args,
+		runner.WithStdinFile(wordlist),
+		runner.WithTimeout(timeout),
+		runner.WithLineCallback(func(line string) { board.Heartbeat("puredns") }),
+		runner.WithStderrCallback(func(line string) { board.Heartbeat("puredns") }))
 
-        var results []string
-        if data, err := os.ReadFile(outFile); err == nil {
-                for _, l := range strings.Split(string(data), "\n") {
-                        if l = strings.TrimSpace(l); l != "" {
-                                results = append(results, l)
-                        }
-                }
-        }
-        if len(results) > 0 {
-                board.Done("puredns", len(results))
-                return results, r.Stderr
-        }
-        finalize(board, "puredns", r)
-        return r.Lines, r.Stderr
+	var results []string
+	if data, err := os.ReadFile(outFile); err == nil {
+		for _, l := range strings.Split(string(data), "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				results = append(results, l)
+			}
+		}
+	}
+	if len(results) > 0 {
+		board.Done("puredns", len(results))
+		return results, r.Stderr
+	}
+
+	// If puredns returned 0 results (due to massdns environment or resolver issues),
+	// automatically fall back to dnsx-brute so DNS bruteforcing never fails silently.
+	if runner.IsAvailable("dnsx") {
+		m.log.Debug("puredns found 0 domains — attempting dnsx-brute fallback for %s", domain)
+		return m.runDnsxBrute(ctx, domain, board)
+	}
+
+	finalize(board, "puredns", r)
+	return r.Lines, r.Stderr
 }
 
 func (m *Module) runPTRSweep(ctx context.Context, board *logger.ProgressBoard) {
@@ -850,25 +857,36 @@ func (m *Module) runMassdns(ctx context.Context, domains []string) {
         if timeout == 0 {
                 timeout = 30 * time.Minute
         }
-        r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
-        if r.Err != nil && len(r.Lines) == 0 {
-                m.log.ToolError("massdns", fmt.Errorf("%s", r.DiagString()), r.Stderr)
-                return
-        }
+	r := runner.Run(ctx, path, args, runner.WithTimeout(timeout))
 
-        // Parse massdns simple output (format: "hostname A ip")
-        var newSubs []string
-        for _, line := range r.Lines {
-                parts := strings.Fields(line)
-                if len(parts) >= 3 && strings.EqualFold(parts[1], "A") {
-                        sub := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parts[0])), ".")
-                        if isValidDomain(sub) {
-                                newSubs = append(newSubs, sub)
-                        }
-                }
-        }
+	// Massdns writes output directly to outFile (-w). Read it from disk.
+	lines := r.Lines
+	if data, err := os.ReadFile(outFile); err == nil {
+		for _, l := range strings.Split(string(data), "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				lines = append(lines, l)
+			}
+		}
+	}
 
-        added := m.store.AddSubdomainsFromSource(m.scope.FilterList(newSubs), "massdns")
-        m.log.ToolDone("massdns", added, time.Since(start))
-        m.log.Debug("massdns: %d lines parsed, %d new subdomains added", len(r.Lines), added)
+	if r.Err != nil && len(lines) == 0 {
+		m.log.ToolError("massdns", fmt.Errorf("%s", r.DiagString()), r.Stderr)
+		return
+	}
+
+	// Parse massdns simple output (format: "hostname A ip")
+	var newSubs []string
+	for _, line := range lines {
+		parts := strings.Fields(line)
+		if len(parts) >= 3 && strings.EqualFold(parts[1], "A") {
+			sub := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parts[0])), ".")
+			if isValidDomain(sub) {
+				newSubs = append(newSubs, sub)
+			}
+		}
+	}
+
+	added := m.store.AddSubdomainsFromSource(m.scope.FilterList(newSubs), "massdns")
+	m.log.ToolDone("massdns", added, time.Since(start))
+	m.log.Debug("massdns: %d lines parsed, %d new subdomains added", len(lines), added)
 }

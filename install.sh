@@ -337,19 +337,27 @@ if command -v findomain &>/dev/null; then
 else
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)  FD_URL="https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux" ;;
-        aarch64) FD_URL="https://github.com/Findomain/Findomain/releases/latest/download/findomain-aarch64-unknown-linux-gnu" ;;
-        *)       FD_URL="https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux" ;;
+        x86_64)  FD_URL="https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip" ;;
+        aarch64) FD_URL="https://github.com/Findomain/Findomain/releases/latest/download/findomain-aarch64.zip" ;;
+        *)       FD_URL="https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux.zip" ;;
     esac
     info "Downloading findomain ($ARCH)..."
-    if wget -q --timeout=20 "$FD_URL" -O "$GOPATH/bin/findomain" 2>/dev/null; then
-        chmod +x "$GOPATH/bin/findomain"
-        if [ -w /usr/local/bin ]; then
-            cp "$GOPATH/bin/findomain" /usr/local/bin/findomain 2>/dev/null || true
-        elif sudo -n true 2>/dev/null; then
-            sudo cp "$GOPATH/bin/findomain" /usr/local/bin/findomain 2>/dev/null || true
+    TMP_FD="/tmp/findomain.zip"
+    if curl -sL --connect-timeout 15 "$FD_URL" -o "$TMP_FD" 2>/dev/null && [ -s "$TMP_FD" ]; then
+        unzip -q -o "$TMP_FD" -d /tmp/findomain_bin 2>/dev/null || true
+        if [ -f /tmp/findomain_bin/findomain ]; then
+            cp /tmp/findomain_bin/findomain "$GOPATH/bin/findomain"
+            chmod +x "$GOPATH/bin/findomain"
+            if [ -w /usr/local/bin ]; then
+                cp "$GOPATH/bin/findomain" /usr/local/bin/findomain 2>/dev/null || true
+            elif sudo -n true 2>/dev/null; then
+                sudo cp "$GOPATH/bin/findomain" /usr/local/bin/findomain 2>/dev/null || true
+            fi
+            success "findomain installed → $GOPATH/bin/findomain"
+        else
+            warn "findomain extraction failed"
         fi
-        success "findomain installed → $GOPATH/bin/findomain"
+        rm -rf "$TMP_FD" /tmp/findomain_bin
     else
         warn "findomain download failed"
     fi

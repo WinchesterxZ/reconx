@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,6 +84,8 @@ type runConfig struct {
 	timeout       time.Duration
 	hardTimeout   time.Duration // always enforced, even if IsNoTimeout() is true
 	stdin         string
+	stdinReader   io.Reader
+	stdinCloser   io.Closer
 	onLine        func(string) // called for each stdout line
 	onStderrLine  func(string) // called for each stderr line
 	env           []string
@@ -105,6 +108,22 @@ func WithHardTimeout(d time.Duration) Option {
 // WithStdin pipes a string to the tool's stdin
 func WithStdin(s string) Option {
 	return func(c *runConfig) { c.stdin = s }
+}
+
+// WithStdinReader sets an io.Reader to stream into the tool's stdin
+func WithStdinReader(r io.Reader) Option {
+	return func(c *runConfig) { c.stdinReader = r }
+}
+
+// WithStdinFile opens a file and streams it directly into the tool's stdin
+func WithStdinFile(path string) Option {
+	return func(c *runConfig) {
+		f, err := os.Open(path)
+		if err == nil {
+			c.stdinReader = f
+			c.stdinCloser = f
+		}
+	}
 }
 
 // WithLineCallback calls fn for each stdout line in real-time
@@ -165,9 +184,15 @@ func Run(ctx context.Context, name string, args []string, opts ...Option) *Resul
 		cmd.Env = append(cmd.Environ(), cfg.env...)
 	}
 
-	// Stdin: If stdin is provided, pipe it. Otherwise explicitly provide an empty reader
-	// so child tools (nuclei, feroxbuster, ffuf, etc.) never block reading standard input.
-	if cfg.stdin != "" {
+	// Stdin: If stdinReader is provided, use it directly.
+	// Else if stdin string is provided, pipe it via strings.NewReader.
+	// Otherwise explicitly provide an empty reader so child tools never block on stdin.
+	if cfg.stdinCloser != nil {
+		defer cfg.stdinCloser.Close()
+	}
+	if cfg.stdinReader != nil {
+		cmd.Stdin = cfg.stdinReader
+	} else if cfg.stdin != "" {
 		cmd.Stdin = strings.NewReader(cfg.stdin)
 	} else {
 		cmd.Stdin = strings.NewReader("")

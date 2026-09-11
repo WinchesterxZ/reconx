@@ -5,6 +5,7 @@ import (
         "fmt"
         "io"
         "net/http"
+        "net/url"
         "os"
         "strings"
         "sync"
@@ -282,7 +283,7 @@ func (m *Module) runGAU(ctx context.Context, input string) []string {
                 go func() {
                         defer wg.Done()
                         defer func() { <-sem }()
-                        args := []string{"--threads", "5", "--providers", "wayback,commoncrawl,urlscan"}
+                        args := []string{"--subs", "--threads", "5", "--providers", "wayback,commoncrawl,otx,urlscan"}
                         m.log.ToolCmd("gau", append(args, d), "")
                         r := runner.Run(ctx, "gau", append(args, d),
                                 runner.WithTimeout(timeout),
@@ -324,7 +325,7 @@ func (m *Module) runGAUPlus(ctx context.Context, input string) []string {
                 go func() {
                         defer wg.Done()
                         defer func() { <-sem }()
-                        args := []string{"-t", "5", "-random-agent"}
+                        args := []string{"-subs", "-t", "5", "-random-agent"}
                         r := runner.Run(ctx, "gauplus", append(args, d),
                                 runner.WithTimeout(timeout),
                                 runner.WithStderrCallback(func(line string) { m.log.Debug("gauplus[%s]: %s", d, line) }))
@@ -588,7 +589,6 @@ func fetchOTX(ctx context.Context, domain string, log *logger.Logger) []string {
 // classifyAndSave splits all discovered URLs into category files
 func (m *Module) classifyAndSave() {
         cats := map[string][]string{}
-        jsExts := []string{".js", ".mjs"}
         apiPat := []string{".json", ".xml", ".graphql", "/api/", "/v1/", "/v2/", "/v3/", "/rest/"}
         backExt := []string{".php", ".asp", ".aspx", ".jsp", ".cfm", ".cgi", ".pl", ".py"}
         loginPat := []string{"login", "signin", "sign-in", "auth", "oauth", "sso", "logout", "password", "reset", "forgot"}
@@ -600,7 +600,7 @@ func (m *Module) classifyAndSave() {
 
         for _, u := range m.store.GetURLs() {
                 ul := strings.ToLower(u)
-                if matchAny(ul, jsExts...) && !strings.Contains(ul, ".json") {
+                if isJSURL(u) {
                         cats["js"] = append(cats["js"], u)
                         m.store.AddJSFile(u)
                 }
@@ -625,6 +625,23 @@ func (m *Module) classifyAndSave() {
                         m.log.Info("  %-16s → %d URLs", cat, len(list))
                 }
         }
+}
+
+func isJSURL(rawURL string) bool {
+        u, err := url.Parse(rawURL)
+        var path string
+        if err == nil {
+                path = strings.ToLower(u.Path)
+        } else {
+                path = strings.ToLower(rawURL)
+                if idx := strings.Index(path, "?"); idx != -1 {
+                        path = path[:idx]
+                }
+        }
+        if strings.Contains(path, ".json") {
+                return false
+        }
+        return strings.HasSuffix(path, ".js") || strings.HasSuffix(path, ".mjs") || strings.HasSuffix(path, ".jsx")
 }
 
 func matchAny(s string, patterns ...string) bool {

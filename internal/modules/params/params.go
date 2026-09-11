@@ -563,6 +563,9 @@ func (m *Module) runDalfox(ctx context.Context, urls []string, paramsDir string)
 		"--only-discovery",
 		"--no-color",
 		"--format", "json",
+		"--workers", "10",
+		"--max-concurrent-targets", "10",
+		"--rate-limit", "30",
 		"-o", outFile,
 	}
 	if m.cfg.BugBountyHeader != "" {

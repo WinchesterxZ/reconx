@@ -32,7 +32,8 @@ func (m *multiFlag) String() string        { return strings.Join(*m, ",") }
 func (m *multiFlag) Set(v string) error    { *m = append(*m, v); return nil }
 
 func main() {
-        var (
+	raiseFDLimit()
+	var (
                 domains     multiFlag
                 ipRanges    multiFlag
                 asns        multiFlag
@@ -247,6 +248,10 @@ func main() {
                         fmt.Fprintf(os.Stderr, "Error loading scope: %v\n", err)
                         os.Exit(1)
                 }
+                // If no targets were specified explicitly via -d, auto-populate from in-scope domains
+                if len(cfg.Target.Domains) == 0 && len(cfg.Scope.InScope) > 0 {
+                        cfg.Target.Domains = cleanDomains(cfg.Scope.InScope)
+                }
         }
 
         // Phase toggles
@@ -315,6 +320,22 @@ func main() {
                 fmt.Fprintf(os.Stderr, "Scan error: %v\n", err)
                 os.Exit(1)
         }
+}
+
+func raiseFDLimit() {
+	var rLimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rLimit); err == nil {
+		if rLimit.Cur < 65535 {
+			target := uint64(65535)
+			if rLimit.Max < target {
+				target = rLimit.Max
+			}
+			if target > rLimit.Cur {
+				rLimit.Cur = target
+				_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rLimit)
+			}
+		}
+	}
 }
 
 func cleanDomains(in []string) []string {
